@@ -5,13 +5,12 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f7f8fb">
   <title>Knowledge Workspace</title>
-  <link rel="stylesheet" href="/ui/styles.css?v=20260820-brand">
+  <link rel="stylesheet" href="/ui/styles.css?v=20260820-conversation">
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="/ui/"><span class="mark" id="brand-mark">K</span><span class="brand-copy"><b id="brand-name">Knowledge Workspace</b><small id="brand-tagline">企业知识助手</small></span></a>
-      <div class="workspace-pill"><i></i><span>已连接</span><b>知识库</b></div>
       <nav aria-label="主导航"><a class="active" href="#answer">问答</a><a href="/admin/">管理后台</a></nav>
       <div class="topbar-actions"><button class="icon-button" id="theme-toggle" type="button" aria-label="切换主题">◐</button><a class="login-link" href="/auth/login">登录</a></div>
     </div>
@@ -33,7 +32,7 @@
       </form>
       <div class="query-foot"><span>只检索已授权资料</span><span>回答逐条附带证据</span><span>可随时取消</span></div>
       <div id="answer-status" class="status" role="status" aria-live="polite"></div>
-      <article id="answer-result" class="answer" aria-live="polite"></article>
+      <section id="conversation" class="conversation" aria-live="polite" aria-label="问答对话"></section>
     </section>
 
     <section class="discovery-grid">
@@ -53,6 +52,6 @@
   </main>
   <footer><b id="brand-footer-name">Knowledge Workspace</b> <span>·</span> <span id="brand-footer-copy">Evidence first</span></footer>
   <script src="/brand.js"></script>
-  <script src="/ui/app.js?v=20260820-brand"></script>
+  <script src="/ui/app.js?v=20260820-conversation"></script>
 </body>
 </html>

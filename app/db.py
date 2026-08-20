@@ -187,6 +187,19 @@ class QueryEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class AnswerFeedback(Base):
+    __tablename__ = "answer_feedback"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    subject: Mapped[str] = mapped_column(String(256), index=True)
+    answer_id: Mapped[str] = mapped_column(String(36), index=True)
+    liked: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "subject", "answer_id", name="uq_answer_feedback_actor"),
+    )
+
+
 
 def init_db():
     # ponytail: create_all keeps local bootstrap runnable; production uses Alembic migrations.
