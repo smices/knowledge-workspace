@@ -1,20 +1,20 @@
 from pathlib import Path
 
 import asyncio
+import hmac
 import json
 import re
 from contextlib import asynccontextmanager, suppress
 from hashlib import sha256
 from io import BytesIO
 from time import perf_counter
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Depends, File, Form, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAI
 from qdrant_client import models
-from redis import Redis
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -29,8 +29,23 @@ from app.auth import (
     principal_from_session,
     safe_next_path,
 )
+from app.cache import (
+    bump_knowledge_revision,
+    cache,
+    cache_get,
+    cache_key,
+    cache_put,
+    evidence_signature,
+    knowledge_revision,
+    normalize_query,
+    query_entities,
+    semantic_get,
+    semantic_put,
+    singleflight,
+)
 from app.config import settings
 from app.db import (
+    AnswerFeedback,
     AuditEvent,
     Chunk,
     Document,
@@ -51,23 +66,6 @@ from app.vector import async_client as async_vector_client, client as vector_cli
 
 llm = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
 async_llm = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
-cache = Redis.from_url(settings.redis_url, decode_responses=True)
-
-def cache_key(kind: str, *parts: object) -> str:
-    return f"sn:{kind}:" + sha256("|".join(map(str, parts)).encode()).hexdigest()
-
-def cache_get(key: str):
-    try:
-        value = cache.get(key)
-        return json.loads(value) if value else None
-    except Exception:
-        return None
-
-def cache_put(key: str, value: object, ttl: int):
-    try:
-        cache.setex(key, ttl, json.dumps(value, ensure_ascii=False))
-    except Exception:
-        pass
 
 
 @asynccontextmanager
@@ -126,6 +124,11 @@ class AnswerRequest(SearchRequest):
 
 class GraphRequest(SearchRequest):
     pass
+
+
+class FeedbackRequest(BaseModel):
+    liked: bool
+    token: str = Field(min_length=64, max_length=64)
 
 
 class RoleRequest(BaseModel):
@@ -573,6 +576,7 @@ def delete_document(document_id: str, p: Principal = Depends(principal_from_sess
                 models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id)),
             ])),
         )
+        bump_knowledge_revision(p.tenant_id)
         doc.status, doc.deleted_at = "deleted", func.now()
         audit(db, p, "document.delete", "document", document_id, "accepted")
         db.commit()
@@ -583,7 +587,9 @@ def delete_document(document_id: str, p: Principal = Depends(principal_from_sess
 @app.post("/search")
 def retrieve(body: SearchRequest, p: Principal = Depends(principal_from_session)):
     started = perf_counter()
-    key = cache_key("retrieval-v2", p.tenant_id, sorted(p.roles), body.query, body.limit, settings.embedding_model)
+    revision = knowledge_revision(p.tenant_id)
+    key = cache_key("retrieval-v3", p.tenant_id, sorted(p.roles), revision,
+                    normalize_query(body.query), body.limit, settings.embedding_model)
     cached = cache_get(key)
     if cached is not None:
         return cached
@@ -600,18 +606,46 @@ def retrieve(body: SearchRequest, p: Principal = Depends(principal_from_session)
     return result
 
 
-async def _answer(body: AnswerRequest, p: Principal):
+def _answer_result(answer: str, state: str, citations: list[dict], contract: list[dict],
+                   revision: int) -> dict:
+    return {"answer_id": str(uuid4()), "answer": answer, "answer_state": state,
+            "answer_state_label": ANSWER_STATE_LABELS[state], "evidence_contract": contract,
+            "citations": citations, "graph_available": state == "answered",
+            "cache": {"level": "generated", "hit": False, "knowledge_revision": revision}}
+
+
+def _cache_result(result: dict, level: str, revision: int) -> dict:
+    copy = dict(result)
+    copy["cache"] = {"level": level, "hit": True, "knowledge_revision": revision}
+    return copy
+
+
+def _feedback_token(answer_id: str, p: Principal) -> str:
+    secret = (settings.identity_session_secret or settings.jwt_secret).encode()
+    message = f"{p.tenant_id}|{p.subject}|{answer_id}".encode()
+    return hmac.new(secret, message, sha256).hexdigest()
+
+
+def _with_feedback(result: dict, p: Principal) -> dict:
+    copy = dict(result)
+    with SessionLocal() as db:
+        copy["liked"] = db.scalar(select(func.count()).select_from(AnswerFeedback).where(
+            AnswerFeedback.tenant_id == p.tenant_id,
+            AnswerFeedback.subject == p.subject,
+            AnswerFeedback.answer_id == result["answer_id"],
+        )) > 0
+    copy["feedback_token"] = _feedback_token(result["answer_id"], p)
+    return copy
+
+
+async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
+                       exact_key: str, semantic_bucket: str) -> dict:
     started = perf_counter()
-    key = cache_key("answer-v2", p.tenant_id, sorted(p.roles), body.query, body.limit, body.temperature, settings.embedding_model, settings.chat_model)
-    cached = cache_get(key)
-    if cached is not None:
-        return cached
     if not p.roles:
         log_query(p, body.query, "answer", 0, started)
-        answer_text = "没有找到当前角色可访问的知识。"
-        return {"answer": answer_text, "answer_state": "no_answer",
-                "answer_state_label": ANSWER_STATE_LABELS["no_answer"],
-                "evidence_contract": [], "citations": [], "graph_available": False}
+        result = _answer_result("没有找到当前角色可访问的知识。", "no_answer", [], [], revision)
+        cache_put(exact_key, result, 300)
+        return result
     vector = (await async_llm.embeddings.create(
         model=settings.embedding_model, input=body.query
     )).data[0].embedding
@@ -619,10 +653,18 @@ async def _answer(body: AnswerRequest, p: Principal):
     contexts = [point.payload or {} for point in points]
     if not contexts:
         log_query(p, body.query, "answer", 0, started)
-        answer_text = "根据当前可访问的知识，我无法确认这个问题。"
-        return {"answer": answer_text, "answer_state": "no_answer",
-                "answer_state_label": ANSWER_STATE_LABELS["no_answer"],
-                "evidence_contract": [], "citations": [], "graph_available": False}
+        result = _answer_result("根据当前可访问的知识，我无法确认这个问题。",
+                                "no_answer", [], [], revision)
+        cache_put(exact_key, result, 300)
+        return result
+    entities = query_entities(body.query)
+    evidence = evidence_signature(contexts)
+    similar = semantic_get(semantic_bucket, vector, entities, evidence)
+    if similar is not None:
+        result = _cache_result(similar, "l2", revision)
+        cache_put(exact_key, similar, 21600)
+        log_query(p, body.query, "answer:l2", len(result.get("citations", [])), started)
+        return result
     context_text = "\n\n".join(
         f"[证据 {i + 1}] 文档：{item.get('title')}，章节块：{item.get('chunk_index')}\n{item.get('content', '')[:1400]}"
         for i, item in enumerate(contexts)
@@ -633,7 +675,7 @@ async def _answer(body: AnswerRequest, p: Principal):
         max_tokens=600,
         reasoning_effort="none",
         messages=[
-            {"role": "system", "content": "你是严格的检索问答助手。只回答问题本身，只能使用证据。禁止引入证据中没有的人物、事件或数字。不要把‘军师/谋士’推断成‘师徒/师生’，不要把合作关系改写成亲属关系。严格输出三段：\n## 结论\n## 归纳\n## 依据\n依据必须引用 [证据 1]、[证据 2]。无法确认就写‘资料不足’，不要编造。"},
+            {"role": "system", "content": "你是严格的检索问答助手。只回答问题本身，只能使用证据。禁止引入证据中没有的人物、事件或数字。不要把‘军师/谋士’推断成‘师徒/师生’，不要把合作关系改写成亲属关系。严格输出三段：\n## 结论\n## 归纳\n## 依据\n结论中的每一条陈述末尾必须直接标注支持它的 [证据 N]；依据也必须引用证据编号。无法确认就写‘资料不足’，不要编造。"},
             {"role": "user", "content": f"问题：{body.query}\n\n证据：\n{context_text}"},
         ],
     )
@@ -644,18 +686,37 @@ async def _answer(body: AnswerRequest, p: Principal):
         )
     citations = citations_for(points, contexts)
     state = answer_state(answer_text, contexts)
-    result = {"answer": answer_text, "answer_state": state,
-              "answer_state_label": ANSWER_STATE_LABELS[state],
-              "evidence_contract": evidence_contract(answer_text, contexts, state),
-              "citations": citations, "graph_available": state == "answered"}
-    cache_put(key, result, 300)
+    contract = evidence_contract(answer_text, contexts, state)
+    result = _answer_result(answer_text, state, citations, contract, revision)
+    cache_put(exact_key, result, 21600 if state == "answered" else 300)
+    if state == "answered" and contract and all(
+            item["support"] == "supported" and item["confidence"] >= 0.85 for item in contract):
+        semantic_put(semantic_bucket, vector, entities, evidence, result)
     log_query(p, body.query, "answer", len(citations), started)
     return result
 
 
+async def _answer(body: AnswerRequest, p: Principal):
+    revision = knowledge_revision(p.tenant_id)
+    scope = (p.tenant_id, sorted(p.roles), revision, body.limit, body.temperature,
+             settings.embedding_model, settings.chat_model, "answer-prompt-v3")
+    exact_key = cache_key("answer-v3", *scope, normalize_query(body.query))
+    cached = cache_get(exact_key)
+    if cached is not None:
+        return _with_feedback(_cache_result(cached, "l1", revision), p)
+    semantic_bucket = cache_key("answer-semantic-v1", *scope)
+    result, joined = await singleflight(
+        exact_key, lambda: _answer_work(body, p, revision, exact_key, semantic_bucket)
+    )
+    result = _cache_result(result, "l0", revision) if joined else result
+    return _with_feedback(result, p)
+
+
 async def _graph(body: GraphRequest, p: Principal):
     started = perf_counter()
-    key = cache_key("graph-v2", p.tenant_id, sorted(p.roles), body.query, body.limit,
+    revision = knowledge_revision(p.tenant_id)
+    key = cache_key("graph-v3", p.tenant_id, sorted(p.roles), revision,
+                    normalize_query(body.query), body.limit,
                     settings.embedding_model, settings.chat_model)
     cached = cache_get(key)
     if cached is not None:
@@ -724,6 +785,31 @@ async def answer(body: AnswerRequest, request: Request,
 async def graph(body: GraphRequest, request: Request,
                 p: Principal = Depends(principal_from_session)):
     return await run_cancellable(_graph(body, p), request)
+
+
+@app.put("/api/v1/rag/answers/{answer_id}/feedback")
+def set_answer_feedback(answer_id: str, body: FeedbackRequest,
+                        p: Principal = Depends(principal_from_session)):
+    try:
+        answer_id = str(UUID(answer_id))
+    except ValueError as exc:
+        raise HTTPException(422, "invalid answer id") from exc
+    if not hmac.compare_digest(body.token, _feedback_token(answer_id, p)):
+        raise HTTPException(403, "invalid feedback token")
+    with SessionLocal() as db:
+        ensure_principal(db, p)
+        item = db.scalar(select(AnswerFeedback).where(
+            AnswerFeedback.tenant_id == p.tenant_id,
+            AnswerFeedback.subject == p.subject,
+            AnswerFeedback.answer_id == answer_id,
+        ))
+        if body.liked and item is None:
+            db.add(AnswerFeedback(tenant_id=p.tenant_id, subject=p.subject,
+                                  answer_id=answer_id, liked=1))
+        elif not body.liked and item is not None:
+            db.delete(item)
+        db.commit()
+    return {"answer_id": answer_id, "liked": body.liked}
 
 
 @app.post("/api/v1/admin/roles")

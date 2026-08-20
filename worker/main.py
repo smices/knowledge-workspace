@@ -5,6 +5,7 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import CommitFailedError
 from qdrant_client import models
 from sqlalchemy import select
+from app.cache import bump_knowledge_revision
 from app.config import settings
 from app.db import Chunk, Document, DocumentGrant, DocumentVersion, Role, SessionLocal
 from app.storage import get_file
@@ -66,6 +67,7 @@ async def run():
                         ]
                         client.delete(settings.qdrant_collection, models.FilterSelector(filter=models.Filter(must=[models.FieldCondition(key="document_id", match=models.MatchValue(value=doc.id))])))
                         client.upsert(settings.qdrant_collection, [models.PointStruct(id=str(uuid5(NAMESPACE_URL, f"{doc.id}:{i}")), vector=v, payload={"tenant_id": doc.tenant_id, "document_id": doc.id, "title": doc.title, "content": piece, "allowed_roles": roles, "source_uri": doc.object_key, "chunk_index": i}) for i, (piece, v) in enumerate(zip(pieces, vectors))])
+                        bump_knowledge_revision(doc.tenant_id)
                         doc.status = "ready"; doc.error = None
                 except Exception as exc:
                     doc.status = "failed"; doc.error = str(exc)[:2000]

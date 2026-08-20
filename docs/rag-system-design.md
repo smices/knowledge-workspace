@@ -159,7 +159,10 @@ Kafka key 使用 `tenant_id:document_id`，保证同一文档事件有序。Cons
 
 只用于：
 
-- Embedding/LLM 短期缓存，缓存键必须包含模型版本和权限作用域。
+- L0 合并同一进程内并发的完全相同问答；最后一个等待者取消时，中断底层检索与生成。
+- L1 复用规范化后完全相同的问题，缓存键包含租户、角色、知识版本、模型、Prompt 和生成参数。
+- L2 仅在问题实体集合、检索证据集合一致且当前嵌入模型的向量相似度不低于 0.70 时复用；只缓存状态为“已回答”且每条结论均被证据直接支持的答案。
+- 文档成功完成索引或删除时提升租户知识版本；旧版本缓存不再命中，无需全量扫描删除。
 - 幂等短锁和租约。
 - 限流和热点查询缓存。
 - 任务进度的短期加速读取，最终状态仍在 PostgreSQL。
@@ -218,7 +221,14 @@ Point ID 使用 `document_version_id:chunk_id`，禁止只使用 `document_id:ch
 
 ```json
 {
+  "answer_id": "uuid",
   "answer": "...",
+  "answer_state": "answered",
+  "liked": false,
+  "feedback_token": "user-scoped-signature",
+  "evidence_contract": [
+    {"claim": "...", "evidence": [1], "support": "supported", "confidence": 0.92}
+  ],
   "citations": [
     {
       "document_id": "uuid",
@@ -229,6 +239,7 @@ Point ID 使用 `document_version_id:chunk_id`，禁止只使用 `document_id:ch
       "score": 0.86
     }
   ],
+  "cache": {"level": "generated|l0|l1|l2", "hit": false, "knowledge_revision": 12},
   "trace_id": "uuid"
 }
 ```
