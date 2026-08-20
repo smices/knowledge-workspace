@@ -2,6 +2,7 @@
 deploy/.env.local
 deploy/k8s/*.local.yaml
 .hermes/
+.agents/
 .DS_Store
 .idea/
 .vscode/
