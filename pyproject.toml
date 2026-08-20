@@ -1,0 +1,36 @@
+[project]
+name = "sn-knowledge"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "sqlalchemy>=2.0,<3",
+  "psycopg[binary]>=3.2,<4",
+  "pydantic-settings>=2.7,<3",
+  "python-multipart>=0.0.20,<1",
+  "qdrant-client>=1.13,<1.14",
+  "redis>=5.2,<6",
+  "aiokafka>=0.12,<1",
+  "boto3>=1.36,<2",
+  "pypdf>=5,<6",
+  "python-docx>=1.1,<2",
+  "openai>=1.66,<2",
+  "PyJWT>=2.10,<3",
+  "httpx>=0.28,<1",
+  "httpx2>=2.10,<3",
+  "alembic>=1.15,<2",
+  "opencc-python-reimplemented>=0.1.7,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9"]
+
+[tool.setuptools.packages.find]
+include = ["app*", "worker*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100

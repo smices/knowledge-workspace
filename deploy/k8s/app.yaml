@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-app-config
+  namespace: knowledge-system
+data:
+  QDRANT_URL: REPLACE_WITH_QDRANT_URL
+  QDRANT_COLLECTION: knowledge_chunks
+  KAFKA_BOOTSTRAP_SERVERS: REPLACE_WITH_KAFKA_BOOTSTRAP_SERVERS
+  KAFKA_DOCUMENT_TOPIC: knowledge.documents
+  S3_ENDPOINT_URL: REPLACE_WITH_S3_ENDPOINT_URL
+  S3_BUCKET: knowledge
+  S3_REGION: us-east-1
+  OPENAI_BASE_URL: REPLACE_WITH_MODEL_API_URL
+  EMBEDDING_MODEL: nomic-embed-text
+  EMBEDDING_DIMENSIONS: "768"
+  CHAT_MODEL: qwen3:8b
+  AUTH_MODE: oidc
+  IDENTITY_ISSUER: https://idp.example.invalid/realms/example
+  IDENTITY_CLIENT_ID: REPLACE_WITH_CLIENT_ID
+  IDENTITY_REDIRECT_URI: https://knowledge.example.invalid/auth/callback
+  IDENTITY_POST_LOGOUT_REDIRECT_URI: https://knowledge.example.invalid/ui/
+  IDENTITY_SCOPE: openid profile email
+  IDENTITY_DEFAULT_TENANT_ID: REPLACE_WITH_TENANT_ID
+  IDENTITY_SESSION_COOKIE: knowledge_session
+  IDENTITY_COOKIE_SECURE: "true"
+  IDENTITY_SESSION_MAX_SECONDS: "28800"
+  BRAND_NAME: Knowledge Workspace
+  BRAND_MARK: K
+  BRAND_TAGLINE: 企业知识助手
+  BRAND_FOOTER: Evidence first
+  BRAND_PRIMARY_COLOR: "#4f5bd5"
+  BRAND_LOGO_URL: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knowledge-api
+  namespace: knowledge-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: knowledge-api}
+  template:
+    metadata:
+      labels: {app: knowledge-api}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: migrate
+          image: knowledge-app:latest
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - {configMapRef: {name: knowledge-app-config}}
+            - {secretRef: {name: knowledge-app-secret}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+      containers:
+        - name: api
+          image: knowledge-app:latest
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom:
+            - {configMapRef: {name: knowledge-app-config}}
+            - {secretRef: {name: knowledge-app-secret}}
+          ports: [{name: http, containerPort: 8000}]
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: {path: /live, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: knowledge-api
+  namespace: knowledge-system
+spec:
+  selector: {app: knowledge-api}
+  ports: [{name: http, port: 8000, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knowledge-worker
+  namespace: knowledge-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: knowledge-worker}
+  template:
+    metadata:
+      labels: {app: knowledge-worker}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: worker
+          image: knowledge-app:latest
+          command: ["python", "-m", "worker.main"]
+          envFrom:
+            - {configMapRef: {name: knowledge-app-config}}
+            - {secretRef: {name: knowledge-app-secret}}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "4", memory: 4Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}

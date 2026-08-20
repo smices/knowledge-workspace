@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f7f8fb">
+  <title>Knowledge Workspace</title>
+  <link rel="stylesheet" href="/ui/styles.css?v=20260820-brand">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/ui/"><span class="mark" id="brand-mark">K</span><span class="brand-copy"><b id="brand-name">Knowledge Workspace</b><small id="brand-tagline">企业知识助手</small></span></a>
+      <div class="workspace-pill"><i></i><span>已连接</span><b>知识库</b></div>
+      <nav aria-label="主导航"><a class="active" href="#answer">问答</a><a href="/admin/">管理后台</a></nav>
+      <div class="topbar-actions"><button class="icon-button" id="theme-toggle" type="button" aria-label="切换主题">◐</button><a class="login-link" href="/auth/login">登录</a></div>
+    </div>
+  </header>
+
+  <main class="workspace-shell">
+    <section class="intro">
+      <div class="eyebrow"><span class="eyebrow-dot"></span><span id="brand-workspace">KNOWLEDGE WORKSPACE</span></div>
+      <h1>从可信资料里，<em>找到答案。</em></h1>
+      <p>把问题交给知识库，回答会带着原文回来。只使用你有权限访问的资料，不用在文档之间来回翻找。</p>
+    </section>
+
+    <section id="answer" class="query-card">
+      <div class="query-card-head"><div><p class="eyebrow">问答工作区</p><h2>你想查什么？</h2></div><span class="status-chip"><i></i>已连接知识库</span></div>
+      <form id="answer-form" class="search-row">
+        <label class="sr-only" for="answer-query">问题</label>
+        <div class="search-input-wrap"><span class="search-icon" aria-hidden="true">⌕</span><input id="answer-query" required autocomplete="off" placeholder="例如：公司的差旅报销标准是什么？"><kbd>⌘ K</kbd></div>
+        <button id="answer-submit" type="submit">生成答案 <span>↗</span></button>
+      </form>
+      <div class="query-foot"><span>只检索已授权资料</span><span>回答逐条附带证据</span><span>可随时取消</span></div>
+      <div id="answer-status" class="status" role="status" aria-live="polite"></div>
+      <article id="answer-result" class="answer" aria-live="polite"></article>
+    </section>
+
+    <section class="discovery-grid">
+      <section class="popular-panel discovery-card">
+        <div class="discovery-head"><div><p class="eyebrow">START HERE</p><h2>常用问题</h2></div><span>按使用次数</span></div>
+        <p class="discovery-help">从一个真实问题开始，答案会保留原文依据。</p>
+        <div id="popular-questions" class="popular-questions"><span class="muted">正在加载…</span></div>
+      </section>
+      <aside class="trust-card discovery-card">
+        <div class="trust-icon">◎</div>
+        <p class="eyebrow">HOW IT WORKS</p>
+        <h2>答案为什么可信？</h2>
+        <p>每次回答都经过相同的三步：先找证据，再整理结论，最后把原文放回你的视线里。</p>
+        <ol><li><b>检索</b><span>只看当前账号有权限的知识</span></li><li><b>核对</b><span>结论与证据逐条对应</span></li><li><b>回看</b><span>点击来源即可展开原文</span></li></ol>
+      </aside>
+    </section>
+  </main>
+  <footer><b id="brand-footer-name">Knowledge Workspace</b> <span>·</span> <span id="brand-footer-copy">Evidence first</span></footer>
+  <script src="/brand.js"></script>
+  <script src="/ui/app.js?v=20260820-brand"></script>
+</body>
+</html>

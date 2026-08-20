@@ -1,0 +1,29 @@
+{
+  "knowledge_base": "测试资料",
+  "documents": [
+    {
+      "file": "三国演义.txt",
+      "ebook_id": 23950,
+      "source": "https://www.gutenberg.org/ebooks/23950",
+      "sha256": "42b715e5c9ef1c52254cf9c41768d626c1f3d287aad9ca830ffbb8b7480eab1c"
+    },
+    {
+      "file": "西游记.txt",
+      "ebook_id": 23962,
+      "source": "https://www.gutenberg.org/ebooks/23962",
+      "sha256": "5e370f2ff987671415f6e9bc5be0aff4535e484b8a4ff3585a50b06248fee446"
+    },
+    {
+      "file": "水浒传.txt",
+      "ebook_id": 23863,
+      "source": "https://www.gutenberg.org/ebooks/23863",
+      "sha256": "bfe2a99983f67e80ad5372cddce0d770c8edb9b9833c3b16d1f68149fa879089"
+    },
+    {
+      "file": "红楼梦.txt",
+      "ebook_id": 24264,
+      "source": "https://www.gutenberg.org/ebooks/24264",
+      "sha256": "bc000a61c459ba8dbbb29d95b8b540e17b3f55533ccbbb2fa2f6febff4d3a73f"
+    }
+  ]
+}

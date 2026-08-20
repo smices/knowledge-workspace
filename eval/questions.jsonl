@@ -1,0 +1,16 @@
+{"id":"sg-01","category":"人物关系","question":"刘备和诸葛亮是什么关系？","expected_titles":["三国演义.txt"],"expected_keywords":["君臣","主公","军师","谋士"]}
+{"id":"sg-02","category":"人物关系","question":"诸葛亮的人物关系图：请列出他的主公、主要盟友和主要对手，每类最多三人。","expected_titles":["三国演义.txt"],"expected_keywords":["刘备","周瑜","司马懿"]}
+{"id":"sg-03","category":"事件原因","question":"赤壁之战中，诸葛亮和周瑜分别起到了什么作用？","expected_titles":["三国演义.txt"],"expected_keywords":["赤壁","周瑜","诸葛亮"]}
+{"id":"sg-04","category":"人物关系","question":"关羽和刘备是什么关系？请用三条以内概括。","expected_titles":["三国演义.txt"],"expected_keywords":["兄弟","义"]}
+{"id":"xy-01","category":"人物关系","question":"孙悟空的师父是谁？他为什么收孙悟空为徒？","expected_titles":["西游记.txt"],"expected_keywords":["唐僧","师父"]}
+{"id":"xy-02","category":"人物关系","question":"孙悟空和红孩儿是什么关系？","expected_titles":["西游记.txt"],"expected_keywords":["妖怪","唐僧","敌"]}
+{"id":"xy-03","category":"事件原因","question":"孙悟空为什么大闹天宫？请归纳主要原因。","expected_titles":["西游记.txt"],"expected_keywords":["天宫","玉帝"]}
+{"id":"xy-04","category":"团队关系","question":"唐僧取经团队有哪些成员？每个人主要承担什么角色？","expected_titles":["西游记.txt"],"expected_keywords":["孙悟空","猪八戒","沙僧"]}
+{"id":"sh-01","category":"事件原因","question":"林冲为什么被发配？请归纳陷害、定罪和结果。","expected_titles":["水浒传.txt"],"expected_keywords":["高衙内","沧州","发配"]}
+{"id":"sh-02","category":"人物关系","question":"宋江在梁山的主要角色是什么？他与晁盖是什么关系？","expected_titles":["水浒传.txt"],"expected_keywords":["宋江","晁盖","梁山"]}
+{"id":"sh-03","category":"人物关系","question":"鲁智深和林冲是什么关系？请用不超过三条概括。","expected_titles":["水浒传.txt"],"expected_keywords":["林冲","鲁智深"]}
+{"id":"sh-04","category":"事件原因","question":"宋江为什么接受招安？请总结主要动机和结果。","expected_titles":["水浒传.txt"],"expected_keywords":["招安","朝廷"]}
+{"id":"hl-01","category":"人物关系","question":"贾宝玉和林黛玉是什么关系？请区分亲属关系和情感关系。","expected_titles":["红楼梦.txt"],"expected_keywords":["贾宝玉","林黛玉"]}
+{"id":"hl-02","category":"人物关系","question":"贾宝玉和薛宝钗是什么关系？","expected_titles":["红楼梦.txt"],"expected_keywords":["贾宝玉","薛宝钗"]}
+{"id":"hl-03","category":"事件原因","question":"林黛玉为什么进入贾府？","expected_titles":["红楼梦.txt"],"expected_keywords":["林黛玉","贾母"]}
+{"id":"hl-04","category":"家族关系","question":"请归纳贾宝玉与贾母、王夫人、林黛玉和薛宝钗的关系。","expected_titles":["红楼梦.txt"],"expected_keywords":["贾母","王夫人","林黛玉","薛宝钗"]}

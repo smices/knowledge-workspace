@@ -1,0 +1,545 @@
+{
+  "base_url": "http://127.0.0.1:18027",
+  "question_count": 12,
+  "retrieval": {
+    "success_rate": 1.0,
+    "p50_ms": 2967.2,
+    "p95_ms": 5085.7,
+    "hit_rate": 1.0,
+    "items": [
+      {
+        "id": "sg-01",
+        "category": "人物关系",
+        "question": "刘备和诸葛亮是什么关系？",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "君臣",
+          "主公",
+          "军师",
+          "谋士"
+        ],
+        "status": 200,
+        "ms": 2423.4,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "三国演义.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "sg-02",
+        "category": "人物关系",
+        "question": "诸葛亮的人物关系图：请列出他的主公、主要盟友和主要对手，每类最多三人。",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "刘备",
+          "周瑜",
+          "司马懿"
+        ],
+        "status": 200,
+        "ms": 2590.8,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "三国演义.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "sg-03",
+        "category": "事件原因",
+        "question": "赤壁之战中，诸葛亮和周瑜分别起到了什么作用？",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "赤壁",
+          "周瑜",
+          "诸葛亮"
+        ],
+        "status": 200,
+        "ms": 2434.6,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "三国演义.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "sg-04",
+        "category": "人物关系",
+        "question": "关羽和刘备是什么关系？请用三条以内概括。",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "兄弟",
+          "义"
+        ],
+        "status": 200,
+        "ms": 2967.2,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "三国演义.txt"
+        ],
+        "result_count": 2
+      },
+      {
+        "id": "xy-01",
+        "category": "人物关系",
+        "question": "孙悟空的师父是谁？他为什么收孙悟空为徒？",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "唐僧",
+          "师父"
+        ],
+        "status": 200,
+        "ms": 3074.9,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "西游记.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "xy-02",
+        "category": "人物关系",
+        "question": "孙悟空和红孩儿是什么关系？",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "妖怪",
+          "唐僧",
+          "敌"
+        ],
+        "status": 200,
+        "ms": 2511.1,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "西游记.txt"
+        ],
+        "result_count": 3
+      },
+      {
+        "id": "xy-03",
+        "category": "事件原因",
+        "question": "孙悟空为什么大闹天宫？请归纳主要原因。",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "天宫",
+          "玉帝"
+        ],
+        "status": 200,
+        "ms": 2947.8,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "西游记.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "xy-04",
+        "category": "团队关系",
+        "question": "唐僧取经团队有哪些成员？每个人主要承担什么角色？",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "孙悟空",
+          "猪八戒",
+          "沙僧"
+        ],
+        "status": 200,
+        "ms": 5020.4,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "西游记.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "sh-01",
+        "category": "事件原因",
+        "question": "林冲为什么被发配？请归纳陷害、定罪和结果。",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "高衙内",
+          "沧州",
+          "发配"
+        ],
+        "status": 200,
+        "ms": 3476.7,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "水浒传.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "sh-02",
+        "category": "人物关系",
+        "question": "宋江在梁山的主要角色是什么？他与晁盖是什么关系？",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "宋江",
+          "晁盖",
+          "梁山"
+        ],
+        "status": 200,
+        "ms": 3638.6,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "水浒传.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "sh-03",
+        "category": "人物关系",
+        "question": "鲁智深和林冲是什么关系？请用不超过三条概括。",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "林冲",
+          "鲁智深"
+        ],
+        "status": 200,
+        "ms": 5528.5,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "水浒传.txt"
+        ],
+        "result_count": 8
+      },
+      {
+        "id": "sh-04",
+        "category": "事件原因",
+        "question": "宋江为什么接受招安？请总结主要动机和结果。",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "招安",
+          "朝廷"
+        ],
+        "status": 200,
+        "ms": 5085.7,
+        "error": null,
+        "hit": true,
+        "titles": [
+          "水浒传.txt"
+        ],
+        "result_count": 8
+      }
+    ]
+  },
+  "answer": {
+    "success_rate": 1.0,
+    "p50_ms": 88929.1,
+    "p95_ms": 140883.5,
+    "hit_rate": 1.0,
+    "citation_rate": 1.0,
+    "keyword_rate": 0.9166666666666666,
+    "items": [
+      {
+        "id": "sg-01",
+        "category": "人物关系",
+        "question": "刘备和诸葛亮是什么关系？",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "君臣",
+          "主公",
+          "军师",
+          "谋士"
+        ],
+        "status": 200,
+        "ms": 51575.6,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "君臣",
+          "谋士"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n刘备和诸葛亮是君臣关系。  \n\n## 归纳  \n刘备三次亲自拜访诸葛亮，最终请其出山辅佐，诸葛亮成为其重要谋士。周瑜曾称诸葛亮为“奸猾之徒”，而刘备则被描述为“枭雄之辈”，表明两人存在主从关系。  \n\n## 依据  \n[证据 1] 明确记载刘备风雪三顾茅庐拜访诸葛亮，并称其为“先生”，最终得到诸葛亮辅佐。[证据 3] 周瑜称诸葛亮为“奸猾之徒”，而刘备被描述为“枭雄之辈”，侧面印证两人存在君臣关系。"
+      },
+      {
+        "id": "sg-02",
+        "category": "人物关系",
+        "question": "诸葛亮的人物关系图：请列出他的主公、主要盟友和主要对手，每类最多三人。",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "刘备",
+          "周瑜",
+          "司马懿"
+        ],
+        "status": 200,
+        "ms": 64051.4,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "刘备"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n诸葛亮的主公为刘备，主要盟友为庞统、法正、赵云，主要对手为孟获、木鹿大王。  \n\n## 归纳  \n诸葛亮的主公是刘备，盟友包括庞统、法正、赵云，对手包括孟获、木鹿大王。  \n\n## 依据  \n[证据 1] 提到刘备为诸葛亮的主公，庞统、法正、魏延、黄忠为刘备部下，与诸葛亮合作。[证据 2] 显示诸葛亮与赵云、魏延共同对抗南蛮势力，孟获、木鹿大王为南蛮首领，属于诸葛亮的主要对手。"
+      },
+      {
+        "id": "sg-03",
+        "category": "事件原因",
+        "question": "赤壁之战中，诸葛亮和周瑜分别起到了什么作用？",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "赤壁",
+          "周瑜",
+          "诸葛亮"
+        ],
+        "status": 200,
+        "ms": 91724.6,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "赤壁",
+          "周瑜",
+          "诸葛亮"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n赤壁之战中，周瑜是东吴的统帅，主导火攻战术并指挥作战；诸葛亮则通过计谋协助东吴取得胜利。  \n\n## 归纳  \n周瑜在赤壁之战中负责火攻的实施与整体战役指挥，其受伤和愤怒源于战事不利。诸葛亮则通过苦肉计（黄盖诈降）等策略为火攻创造条件，间接促成东吴胜利。  \n\n## 依据  \n[证据 1] 显示周瑜因愤怒导致金疮迸裂，且被诸葛亮的计谋（如黄盖诈降）所败，表明其战术被诸葛亮影响。[证据 3] 记载周瑜指挥东吴舰队实施火攻，导致曹军大败，直接体现其作战主导作用。"
+      },
+      {
+        "id": "sg-04",
+        "category": "人物关系",
+        "question": "关羽和刘备是什么关系？请用三条以内概括。",
+        "expected_titles": [
+          "三国演义.txt"
+        ],
+        "expected_keywords": [
+          "兄弟",
+          "义"
+        ],
+        "status": 200,
+        "ms": 128903.4,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "兄弟",
+          "义"
+        ],
+        "citation_count": 2,
+        "answer": "## 结论  \n关羽与刘备是结义兄弟及君臣关系。  \n\n## 归纳  \n1. 两人在桃园结义，以兄弟相称。  \n2. 刘备称汉中王后，关羽被封为五虎大将，形成君臣关系。  \n\n## 依据  \n[证据 2] 显示刘备与关羽在桃园结义为兄弟；[证据 1] 记载刘备称王后封关羽为五虎大将，确立君臣关系。"
+      },
+      {
+        "id": "xy-01",
+        "category": "人物关系",
+        "question": "孙悟空的师父是谁？他为什么收孙悟空为徒？",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "唐僧",
+          "师父"
+        ],
+        "status": 200,
+        "ms": 104293.3,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "唐僧",
+          "师父"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n孙悟空的师父是唐僧，他收孙悟空为徒是因为孙悟空皈依正果并愿意跟随他取经。  \n\n## 归纳  \n根据文献记载，孙悟空在被压五行山后，因唐僧解救其脱离困境并皈依正果，遂成为唐僧的徒弟。  \n\n## 依据  \n[证据 2] 提到孙悟空被压山下时回忆：“感菩薩賜與法旨，我和你同住同修，同緣同相，同見同知”，表明其皈依正果后成为唐僧徒弟。[证据 1] 记载唐僧在花果山识破假孙悟空后，与孙悟空共同经历辨真假的过程，间接印证唐僧为师的身份。"
+      },
+      {
+        "id": "xy-02",
+        "category": "人物关系",
+        "question": "孙悟空和红孩儿是什么关系？",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "妖怪",
+          "唐僧",
+          "敌"
+        ],
+        "status": 200,
+        "ms": 77026.5,
+        "error": null,
+        "hit": true,
+        "keywords": [],
+        "citation_count": 3,
+        "answer": "## 结论  \n孙悟空和红孩儿是叔侄关系。  \n\n## 归纳  \n红孩儿是牛魔王之子，而孙悟空与牛魔王结为兄弟，因此红孩儿为孙悟空的侄子。  \n\n## 依据  \n[证据 1] 明确提到红孩儿称孙悟空为“贤侄”，并提及两人父亲（牛魔王）与孙悟空结义为兄弟。[证据 2] 罗刹女（红孩儿之母）称孙悟空为“嫂嫂”，进一步印证红孩儿与孙悟空的叔侄关系。"
+      },
+      {
+        "id": "xy-03",
+        "category": "事件原因",
+        "question": "孙悟空为什么大闹天宫？请归纳主要原因。",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "天宫",
+          "玉帝"
+        ],
+        "status": 200,
+        "ms": 86549.0,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "天宫"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n孙悟空大闹天宫的主要原因未在提供的证据中明确说明。  \n\n## 归纳  \n证据仅提及孙悟空曾因反抗天庭而被压五行山，但未直接阐述其大闹天宫的具体动机或原因。  \n\n## 依据  \n资料不足。证据1、2、3均未明确解释孙悟空大闹天宫的直接原因，仅提及事件本身及后续关联情节。"
+      },
+      {
+        "id": "xy-04",
+        "category": "团队关系",
+        "question": "唐僧取经团队有哪些成员？每个人主要承担什么角色？",
+        "expected_titles": [
+          "西游记.txt"
+        ],
+        "expected_keywords": [
+          "孙悟空",
+          "猪八戒",
+          "沙僧"
+        ],
+        "status": 200,
+        "ms": 151086.6,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "孙悟空",
+          "猪八戒",
+          "沙僧"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n唐僧取经团队成员包括唐僧、孙悟空、猪八戒、沙僧和白龙马。唐僧负责取经使命，孙悟空负责战斗与保护，猪八戒负责后勤辅助，沙僧负责搬运行李，白龙马作为坐骑。  \n\n## 归纳  \n团队成员明确为五人，分工基于文本中多次提及的职责：孙悟空（行者）持金箍棒护师，沙僧挑担，猪八戒（八戒）随行，白龙马（白马）驮行李，唐僧为核心领导者。  \n\n## 依据  \n[证据 1] 提到“沙僧挑著擔；行者在後面拿著棒”，明确沙僧负责搬运，孙悟空负责护卫。[证据 2] 提到“唐僧、沙僧、八戒、白馬、行李”，佐证团队成员及分工。"
+      },
+      {
+        "id": "sh-01",
+        "category": "事件原因",
+        "question": "林冲为什么被发配？请归纳陷害、定罪和结果。",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "高衙内",
+          "沧州",
+          "发配"
+        ],
+        "status": 200,
+        "ms": 111415.2,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "高衙内",
+          "沧州",
+          "发配"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n林冲被发配的原因是高衙内设计陷害，因“撞了高衙内”引发屈案，最终被定罪发配沧州。  \n\n## 归纳  \n陷害：高衙内因私怨设计让林冲与自己冲突，导致林冲被诬陷。定罪：林冲被认定犯法（如刺杀高衙内），遭高太尉指使官府定罪。结果：林冲被发配沧州，后落草梁山。  \n\n## 依据  \n[证据 2] 明确记载林冲因“撞了高衙内，吃了屈官司”被发配；[证据 3] 提到高太尉欲陷害林冲性命，鲁智深救其一命。"
+      },
+      {
+        "id": "sh-02",
+        "category": "人物关系",
+        "question": "宋江在梁山的主要角色是什么？他与晁盖是什么关系？",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "宋江",
+          "晁盖",
+          "梁山"
+        ],
+        "status": 200,
+        "ms": 140883.5,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "宋江",
+          "晁盖",
+          "梁山"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n宋江在梁山的主要角色是重要领导之一，与晁盖是结义兄弟关系。  \n\n## 归纳  \n证据显示宋江被晁盖视为兄弟并受到礼遇，参与军事谋划（如与吴学究商议破阵），且晁盖曾多次劝阻宋江下山，体现亲密关系。  \n\n## 依据  \n[证据 1] 中晁盖称宋江为“兄弟”，并亲自迎接其上山，体现结义关系；[证据 3] 中晁盖称宋江为“贤弟”，并亲自安排其父亲安全，进一步印证兄弟情谊。"
+      },
+      {
+        "id": "sh-03",
+        "category": "人物关系",
+        "question": "鲁智深和林冲是什么关系？请用不超过三条概括。",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "林冲",
+          "鲁智深"
+        ],
+        "status": 200,
+        "ms": 88576.3,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "林冲",
+          "鲁智深"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n鲁智深和林冲同为梁山泊步军头领，但无直接隶属或特殊关系描述。  \n\n## 归纳  \n证据显示两人同属步军系统，但未提及具体互动或亲属/师徒等关系。  \n\n## 依据  \n[证据 1] 明确将鲁智深列为步军头领，林冲亦在马军五虎将中，同属梁山泊军事体系。[证据 2] 记载两人同为步军将领，参与同一战役部署，但无直接关联描述。"
+      },
+      {
+        "id": "sh-04",
+        "category": "事件原因",
+        "question": "宋江为什么接受招安？请总结主要动机和结果。",
+        "expected_titles": [
+          "水浒传.txt"
+        ],
+        "expected_keywords": [
+          "招安",
+          "朝廷"
+        ],
+        "status": 200,
+        "ms": 88929.1,
+        "error": null,
+        "hit": true,
+        "keywords": [
+          "招安"
+        ],
+        "citation_count": 3,
+        "answer": "## 结论  \n资料不足，无法总结宋江接受招安的主要动机和结果。  \n\n## 归纳  \n提供的证据仅涉及宋江与阎婆惜的冲突、杀妻事件及后续处理，以及杨志与曹正的相遇，均未提及招安相关情节。  \n\n## 依据  \n资料不足。"
+      }
+    ]
+  },
+  "concurrent_retrieval": {
+    "workers": 4,
+    "success_rate": 1.0,
+    "p95_ms": 15467.3
+  }
+}

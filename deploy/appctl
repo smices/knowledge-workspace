@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+deploy_dir=$(cd "$(dirname "$0")" && pwd)
+repo_dir=$(cd "$deploy_dir/.." && pwd)
+env_file=${APP_ENV_FILE:-$deploy_dir/.env.local}
+
+need_env() {
+  if [[ ! -f "$env_file" ]]; then
+    echo "Missing $env_file. Run: deploy/appctl init-source or deploy/appctl init-docker" >&2
+    exit 1
+  fi
+}
+
+compose() {
+  need_env
+  APP_ENV_FILE="$env_file" docker compose --env-file "$env_file" -f "$deploy_dir/docker-compose.yml" "$@"
+}
+
+load_env() {
+  need_env
+  set -a
+  # shellcheck disable=SC1090
+  source "$env_file"
+  set +a
+}
+
+validate_config() {
+  local file=$1
+  if grep -Eiq '(REPLACE_WITH|replace-with)' "$file"; then
+    echo "Placeholder values remain in $file." >&2
+    exit 1
+  fi
+}
+
+init_env() {
+  local template=$1
+  if [[ -e "$env_file" ]]; then
+    echo "$env_file already exists; leaving it unchanged." >&2
+    exit 1
+  fi
+  cp "$template" "$env_file"
+  chmod 600 "$env_file"
+  echo "Created $env_file. Replace all placeholder values before starting services."
+}
+
+case "${1:-help}" in
+  init-source) init_env "$deploy_dir/env/source.env.example" ;;
+  init-docker) init_env "$deploy_dir/env/docker.env.example" ;;
+  infra-up) compose up -d postgres qdrant redis kafka-init minio ;;
+  local-api)
+    need_env
+    validate_config "$env_file"
+    load_env
+    cd "$repo_dir"
+    "$repo_dir/.venv/bin/alembic" upgrade head
+    exec "$repo_dir/.venv/bin/uvicorn" app.main:app --host "${APP_BIND:-127.0.0.1}" --port "${APP_PORT:-8000}"
+    ;;
+  local-worker)
+    need_env
+    validate_config "$env_file"
+    load_env
+    cd "$repo_dir"
+    exec "$repo_dir/.venv/bin/python" -m worker.main
+    ;;
+  docker-up) need_env; validate_config "$env_file"; compose up -d --build ;;
+  docker-down) compose down ;;
+  init-test-data)
+    exec "$repo_dir/.venv/bin/python" "$repo_dir/eval/init_corpus.py" \
+      --base-url "${TEST_DATA_BASE_URL:-http://127.0.0.1:8000}"
+    ;;
+  status) compose ps ;;
+  k8s-check)
+    command -v kubectl >/dev/null || { echo "kubectl is required" >&2; exit 1; }
+    kubectl kustomize "$deploy_dir/k8s" >/dev/null
+    echo "Kubernetes manifests render successfully."
+    ;;
+  k8s-apply)
+    secret_file=${2:-$deploy_dir/k8s/secret.local.yaml}
+    [[ -f "$secret_file" ]] || { echo "Missing secret file: $secret_file" >&2; exit 1; }
+    validate_config "$deploy_dir/k8s/app.yaml"
+    validate_config "$secret_file"
+    if grep -Eiq 'example\.invalid' "$deploy_dir/k8s/app.yaml" "$deploy_dir/k8s/kustomization.yaml"; then
+      echo "Example domains remain in Kubernetes configuration." >&2
+      exit 1
+    fi
+    kubectl apply -f "$deploy_dir/k8s/namespace.yaml"
+    kubectl apply -f "$secret_file"
+    kubectl apply -k "$deploy_dir/k8s"
+    ;;
+  help|*)
+    echo "Usage: deploy/appctl {init-source|init-docker|infra-up|local-api|local-worker|docker-up|docker-down|init-test-data|status|k8s-check|k8s-apply [secret-file]}"
+    ;;
+esac
