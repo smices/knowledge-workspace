@@ -1,4 +1,6 @@
+import asyncio
 import io, json, re
+from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 from aiokafka import AIOKafkaConsumer
@@ -63,18 +65,21 @@ async def run():
                         pass
                     continue
                 doc.status = "processing"; db.commit()
+                version = None
                 try:
+                    version = db.scalar(select(DocumentVersion).where(DocumentVersion.document_id == doc.id).order_by(DocumentVersion.version.desc()))
+                    if version is None:
+                        raise RuntimeError("document version missing")
+                    version.status = "processing"
+                    db.commit()
                     pieces = chunks(extract(get_file(doc.object_key), doc.content_type))
                     if not pieces:
                         raise RuntimeError("no extractable text")
                     vectors = []
                     for start in range(0, len(pieces), 32):
-                        vectors.extend(embed([piece for piece, _, _ in pieces[start:start + 32]]))
+                        vectors.extend(await asyncio.to_thread(embed, [piece for piece, _, _ in pieces[start:start + 32]]))
                     db.refresh(doc)
                     if doc.status not in {"canceled", "deleted"}:
-                        version = db.scalar(select(DocumentVersion).where(DocumentVersion.document_id == doc.id).order_by(DocumentVersion.version.desc()))
-                        if version is None:
-                            raise RuntimeError("document version missing")
                         db.query(Chunk).filter(Chunk.document_version_id == version.id).delete(synchronize_session=False)
                         db.query(KnowledgeRelation).filter(KnowledgeRelation.document_version_id == version.id).delete(synchronize_session=False)
                         db.add_all([Chunk(id=str(uuid5(NAMESPACE_URL, f"{version.id}:{i}")), document_version_id=version.id,
@@ -99,8 +104,13 @@ async def run():
                         ) for i, ((piece, section_path, page), v) in enumerate(zip(pieces, vectors))])
                         bump_knowledge_revision(doc.tenant_id)
                         doc.status = "ready"; doc.error = None
+                        version.status = "ready"; version.error_code = None; version.error_message = None
+                        version.published_at = datetime.now(UTC).replace(tzinfo=None)
                 except Exception as exc:
-                    doc.status = "failed"; doc.error = str(exc)[:2000]
+                    error = str(exc)[:2000]
+                    doc.status = "failed"; doc.error = error
+                    if version is not None:
+                        version.status = "failed"; version.error_code = "ingestion_failed"; version.error_message = error
                 db.commit()
                 try:
                     await consumer.commit()
