@@ -49,7 +49,16 @@ def ensure_collection():
 
 def _focus_parts(text: str) -> list[str]:
     focus = _strip_question(text)
-    return [part for block in re.findall(r"[\u4e00-\u9fff]+", focus) for part in re.split(r"[和與及跟、的]", block) if len(part) >= 2]
+    focus = re.sub(r"(?:分別|各自|請|归纳|歸納|列出|总结|總結|用不超過|每類|每个|每個|區分).*", "", focus)
+    parts = []
+    for block in re.findall(r"[\u4e00-\u9fff]+", focus):
+        if block.endswith(("中", "內")):
+            continue
+        for part in re.split(r"[和與及跟、的]", block):
+            part = re.sub(r"(?:在|於).*", "", part)
+            if len(part) >= 2 and not part.startswith(("主要", "角色", "作用", "原因", "动机", "動機", "结果", "結果", "关系", "關係", "什么", "什麼", "他")):
+                parts.append(part)
+    return list(dict.fromkeys(parts))
 
 
 def _strip_question(text: str) -> str:
@@ -57,13 +66,15 @@ def _strip_question(text: str) -> str:
 
 
 def _terms(text: str) -> set[str]:
-    focus = _strip_question(text)
+    focus = re.sub(r"(?:是什麼關係|關係|是誰|為什麼|為何|如何|有哪些|多少|嗎|呢)", "", _to_traditional(text))
+    focus = re.sub(r"(?:分別|各自|請|归纳|歸納|列出|总结|總結|用不超過|每類|每个|每個|區分).*", "", focus)
     terms = set(re.findall(r"[A-Za-z0-9_]{2,}", focus.lower()))
     for block in re.findall(r"[\u4e00-\u9fff]+", focus):
         for part in re.split(r"[和與及跟、的]", block):
-            if len(part) >= 2:
-                terms.add(part)
-                terms.update(part[i:i + 2] for i in range(len(part) - 1))
+            if len(part) < 2:
+                continue
+            terms.add(part)
+            terms.update(part[i:i + 2] for i in range(len(part) - 1))
     return terms
 
 

@@ -13,6 +13,8 @@ def test_multi_entity_query_requires_cooccurrence_in_one_evidence_chunk():
     assert len(result) == 2
     assert all("刘备" in item.payload["content"] and "诸葛亮" in item.payload["content"] for item in result)
     assert _focus_parts("刘备和诸葛亮的关系是什么？") == ["劉備", "諸葛亮"]
+    assert _focus_parts("赤壁之战中，诸葛亮和周瑜分别起到了什么作用？") == ["諸葛亮", "周瑜"]
+    assert _focus_parts("宋江在梁山的主要角色是什么？他与晁盖是什么关系？") == ["宋江", "晁蓋"]
 
 
 def test_low_lexical_relevance_is_rejected():
