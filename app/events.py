@@ -7,7 +7,8 @@ async def publish_documents(document_ids: list[str]):
     await producer.start()
     try:
         for document_id in document_ids:
-            await producer.send_and_wait(settings.kafka_document_topic, json.dumps({"document_id": document_id}).encode())
+            await producer.send_and_wait(settings.kafka_document_topic, json.dumps({"document_id": document_id}).encode(),
+                                         key=document_id.encode())
     finally:
         await producer.stop()
 
