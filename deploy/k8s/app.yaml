@@ -19,12 +19,13 @@ data:
   IDENTITY_ISSUER: https://idp.example.invalid/realms/example
   IDENTITY_CLIENT_ID: REPLACE_WITH_CLIENT_ID
   IDENTITY_REDIRECT_URI: https://knowledge.example.invalid/auth/callback
-  IDENTITY_POST_LOGOUT_REDIRECT_URI: https://knowledge.example.invalid/ui/
+  IDENTITY_POST_LOGOUT_REDIRECT_URI: https://knowledge.example.invalid/
   IDENTITY_SCOPE: openid profile email
   IDENTITY_DEFAULT_TENANT_ID: REPLACE_WITH_TENANT_ID
   IDENTITY_SESSION_COOKIE: knowledge_session
   IDENTITY_COOKIE_SECURE: "true"
   IDENTITY_SESSION_MAX_SECONDS: "28800"
+  LOCAL_ADMIN_USERNAME: REPLACE_WITH_INITIAL_ADMIN_USERNAME
   BRAND_NAME: Knowledge Workspace
   BRAND_MARK: K
   BRAND_TAGLINE: 企业知识助手

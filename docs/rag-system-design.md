@@ -83,6 +83,8 @@ API → 身份认证 → PostgreSQL 获取有效角色/权限
     → 可选 rerank → LLM → answer + citations
 ```
 
+认证身份来自 IdP；应用角色、应用内启用状态和审计记录以 PostgreSQL 为事实源。首次 OIDC 安装创建唯一的本地初始化管理员，凭安装 Secret 登录，仅可配置 IdP 账号的应用权限，且不承载 IdP 资料或密码。
+
 ## 4. 服务职责
 
 ### API

@@ -11,7 +11,7 @@
 | `BRAND_TAGLINE` | 顶部副标题和浏览器标题说明 | `企业知识助手` |
 | `BRAND_FOOTER` | 页脚短句；留空则隐藏 | `Evidence first` |
 | `BRAND_PRIMARY_COLOR` | 六位十六进制主色 | `#4f5bd5` |
-| `BRAND_LOGO_URL` | 站内绝对路径或 HTTP(S) 图片地址 | `/ui/logo.svg` |
+| `BRAND_LOGO_URL` | 站内绝对路径或 HTTP(S) 图片地址 | `/assets/logo.svg` |
 
 配置通过 `/brand.js` 提供给主问答页和 Admin。该响应禁用缓存，重启 API 后刷新页面即可生效。
 
@@ -36,7 +36,7 @@ deploy/appctl local-api
 deploy/appctl local-worker
 ```
 
-访问 `http://127.0.0.1:8000/ui/` 和 `http://127.0.0.1:8000/admin/`。
+访问 `http://127.0.0.1:8000/`、`http://127.0.0.1:8000/home` 和 `http://127.0.0.1:8000/admin/`。
 
 需要复现项目评测时，在 API 和 Worker 已启动、`AUTH_MODE=dev` 的本地环境显式初始化测试资料：
 
@@ -81,6 +81,7 @@ deploy/appctl k8s-apply
 
 - 不提交 `deploy/.env.local` 或 `deploy/k8s/*.local.yaml`。
 - `AUTH_MODE=oidc` 时使用至少 32 字符的会话密钥并保持 `IDENTITY_COOKIE_SECURE=true`。
+- 首次 OIDC 安装还必须在 Secret 中配置 `LOCAL_ADMIN_PASSWORD`，并在 ConfigMap 中配置 `LOCAL_ADMIN_USERNAME`。该唯一系统账号仅用于进入 `/login/admin` 分配 IdP 员工账号的应用权限；不要将其作为员工账号或 IdP 账号管理。
 - Kubernetes 镜像使用不可变 tag 或 digest，不使用 `latest`。
-- 部署后检查 `/live`、`/health`、`/ui/`、`/admin/` 和 `/brand.js`。
+- 部署后检查 `/live`、`/health`、`/`、`/login`、`/home`、`/admin/` 和 `/brand.js`。
 - 分别验证登录、会话过期、401、403、退出和回跳路径。

@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 import asyncio
 import hmac
@@ -11,7 +12,7 @@ from time import perf_counter
 from uuid import UUID, uuid4
 
 from fastapi import Depends, File, Form, FastAPI, HTTPException, Query, Request, UploadFile
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAI
 from qdrant_client import models
@@ -23,6 +24,7 @@ from app.auth import (
     Principal,
     _sign_session,
     authorization_request,
+    browser_session_active,
     exchange_code,
     identity_account_url,
     identity_logout_url,
@@ -53,6 +55,7 @@ from app.db import (
     DocumentVersion,
     KnowledgeBase,
     Principal as DbPrincipal,
+    PrincipalRole,
     QueryEvent,
     Role,
     SessionLocal,
@@ -60,6 +63,7 @@ from app.db import (
     engine,
     init_db,
 )
+from app.local_admin import authenticate_local_admin, ensure_local_admin
 from app.events import publish_document
 from app.storage import put_file
 from app.vector import async_client as async_vector_client, client as vector_client, ensure_collection, search, search_async
@@ -71,6 +75,8 @@ async_llm = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.opena
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    if settings.auth_mode.lower() == "oidc" or settings.local_admin_username or settings.local_admin_password:
+        ensure_local_admin()
     ensure_collection()
     try:
         yield
@@ -96,7 +102,7 @@ def brand_script():
     return Response(body, media_type="application/javascript", headers={"Cache-Control": "no-store"})
 
 
-app.mount("/ui", StaticFiles(directory="web", html=True), name="ui")
+app.mount("/assets", StaticFiles(directory="web"), name="assets")
 
 
 class SpaStaticFiles(StaticFiles):
@@ -133,6 +139,14 @@ class FeedbackRequest(BaseModel):
 
 class RoleRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9:_-]+$")
+
+
+class MemberRolesRequest(BaseModel):
+    roles: set[str] = Field(default_factory=set)
+
+
+class MemberStatusRequest(BaseModel):
+    status: Literal["active", "disabled"]
 
 
 def hmac_compare(left: str, right: str) -> bool:
@@ -338,8 +352,29 @@ def audit(db, principal: Principal, action: str, resource_type: str, resource_id
 
 
 @app.get("/", include_in_schema=False)
-def root():
-    return RedirectResponse("/ui/")
+def root(request: Request):
+    return RedirectResponse("/home" if browser_session_active(request) else "/login", status_code=303)
+
+
+@app.get("/login", include_in_schema=False)
+def login_page(request: Request):
+    if browser_session_active(request):
+        return RedirectResponse("/home", status_code=303)
+    return FileResponse("web/login.html")
+
+
+@app.get("/login/admin", include_in_schema=False)
+def local_admin_login_page(request: Request):
+    if browser_session_active(request):
+        return RedirectResponse("/admin/", status_code=303)
+    return FileResponse("web/local-admin-login.html")
+
+
+@app.get("/home", include_in_schema=False)
+def home(request: Request):
+    if not browser_session_active(request):
+        return RedirectResponse("/login", status_code=303)
+    return FileResponse("web/index.html")
 
 
 @app.get("/health")
@@ -372,7 +407,22 @@ def live():
 
 
 @app.get("/auth/login", include_in_schema=False)
-def login(next: str = Query(default="/ui/")):
+def login(next: str = Query(default="/home")):
+    destination = safe_next_path(next)
+    if settings.auth_mode.lower() == "dev":
+        response = RedirectResponse(destination, status_code=303)
+        response.set_cookie(
+            settings.identity_session_cookie,
+            "dev",
+            httponly=True,
+            secure=settings.identity_cookie_secure,
+            samesite="lax",
+            max_age=settings.identity_session_max_seconds,
+            path="/",
+        )
+        return response
+    if settings.auth_mode.lower() != "oidc":
+        raise HTTPException(503, "browser login requires AUTH_MODE=oidc or dev")
     authorization_url, state, nonce, verifier = authorization_request()
     response = RedirectResponse(authorization_url, status_code=303)
     cookie_kwargs = {"httponly": True, "secure": settings.identity_cookie_secure,
@@ -380,7 +430,19 @@ def login(next: str = Query(default="/ui/")):
     response.set_cookie("oi_oidc_state", state, **cookie_kwargs)
     response.set_cookie("oi_oidc_nonce", nonce, **cookie_kwargs)
     response.set_cookie("oi_oidc_verifier", verifier, **cookie_kwargs)
-    response.set_cookie("oi_oidc_next", safe_next_path(next), **cookie_kwargs)
+    response.set_cookie("oi_oidc_next", destination, **cookie_kwargs)
+    return response
+
+
+@app.post("/auth/local-admin/login", include_in_schema=False)
+def local_admin_login(username: str = Form(...), password: str = Form(...), next: str = Form(default="/admin/")):
+    principal = authenticate_local_admin(username, password)
+    if principal is None:
+        raise HTTPException(401, "Invalid local administrator credentials")
+    response = RedirectResponse(safe_next_path(next), status_code=303)
+    response.set_cookie(settings.identity_session_cookie, _sign_session(principal), httponly=True,
+                        secure=settings.identity_cookie_secure, samesite="lax",
+                        max_age=settings.identity_session_max_seconds, path="/")
     return response
 
 
@@ -412,16 +474,19 @@ def callback(request, code: str | None = None, state: str | None = None,
 @app.get("/auth/logout", include_in_schema=False)
 def logout():
     # Provider outage must not leave a local session active.
-    provider_url = "/ui/"
-    with suppress(Exception):
-        provider_url = identity_logout_url()
+    provider_url = "/login"
+    if settings.auth_mode.lower() == "oidc":
+        with suppress(Exception):
+            provider_url = identity_logout_url()
     response = RedirectResponse(provider_url, status_code=303)
     response.delete_cookie(settings.identity_session_cookie, path="/")
     return response
 
 
 @app.get("/account", include_in_schema=False)
-def account():
+def account(p: Principal = Depends(principal_from_session)):
+    if p.source == "local":
+        raise HTTPException(404, "local administrator has no profile")
     return RedirectResponse(identity_account_url(), status_code=303)
 
 
@@ -823,6 +888,77 @@ def create_role(body: RoleRequest, p: Principal = Depends(principal_from_session
             db.add(role)
             db.commit()
         return {"id": role.id, "name": role.name}
+
+
+@app.get("/api/v1/admin/members")
+def list_members(p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    with SessionLocal() as db:
+        members = db.scalars(select(DbPrincipal).where(DbPrincipal.tenant_id == p.tenant_id)
+                             .order_by(DbPrincipal.created_at.desc())).all()
+        assignments = db.execute(select(PrincipalRole.principal_id, Role.name).join(
+            Role, Role.id == PrincipalRole.role_id
+        ).where(Role.tenant_id == p.tenant_id)).all()
+        roles_by_subject: dict[str, list[str]] = {}
+        for subject, name in assignments:
+            roles_by_subject.setdefault(subject, []).append(name)
+        return {"items": [{
+            "subject": member.id,
+            "source": "local" if member.principal_type == "local_admin" else "idp",
+            "status": member.status,
+            "roles": sorted(roles_by_subject.get(member.id, [])),
+            "initial_local_admin": member.principal_type == "local_admin",
+        } for member in members], "roles": db.scalars(select(Role.name).where(
+            Role.tenant_id == p.tenant_id).order_by(Role.name)).all()}
+
+
+def managed_idp_member(db, principal: Principal, subject: str) -> DbPrincipal:
+    member = db.scalar(select(DbPrincipal).where(
+        DbPrincipal.id == subject, DbPrincipal.tenant_id == principal.tenant_id
+    ))
+    if member is None:
+        raise HTTPException(404, "member not found")
+    if member.principal_type == "local_admin":
+        raise HTTPException(400, "The installation administrator is not managed here")
+    if subject == principal.subject:
+        raise HTTPException(409, "Administrators cannot change their own access")
+    return member
+
+
+@app.put("/api/v1/admin/members/{subject}/roles")
+def update_member_roles(subject: str, body: MemberRolesRequest, p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    roles = {name.strip() for name in body.roles if name.strip()}
+    if any(not re.fullmatch(r"[a-zA-Z0-9:_-]{1,128}", name) for name in roles):
+        raise HTTPException(422, "invalid role name")
+    with SessionLocal() as db:
+        member = managed_idp_member(db, p, subject)
+        existing = db.scalars(select(PrincipalRole).join(Role, Role.id == PrincipalRole.role_id).where(
+            PrincipalRole.principal_id == member.id, Role.tenant_id == p.tenant_id
+        )).all()
+        for assignment in existing:
+            db.delete(assignment)
+        for name in roles:
+            role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
+            if role is None:
+                role = Role(id=f"{p.tenant_id}:{name}", tenant_id=p.tenant_id, name=name)
+                db.add(role)
+                db.flush()
+            db.add(PrincipalRole(principal_id=member.id, role_id=role.id))
+        audit(db, p, "member.roles.update", "principal", member.id, "accepted")
+        db.commit()
+    return {"subject": subject, "roles": sorted(roles)}
+
+
+@app.put("/api/v1/admin/members/{subject}/status")
+def update_member_status(subject: str, body: MemberStatusRequest, p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    with SessionLocal() as db:
+        member = managed_idp_member(db, p, subject)
+        member.status = body.status
+        audit(db, p, "member.status.update", "principal", member.id, "accepted")
+        db.commit()
+    return {"subject": subject, "status": body.status}
 
 
 @app.get("/api/v1/admin/stats")

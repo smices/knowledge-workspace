@@ -11,6 +11,7 @@ export default defineConfig({
     { path: '/', component: '@/pages/index' },
     { path: '/documents', component: '@/pages/documents' },
     { path: '/tasks', component: '@/pages/tasks' },
+    { path: '/members', component: '@/pages/members' },
     { path: '/logs', component: '@/pages/logs' },
     { path: '*', redirect: '/' },
   ],
