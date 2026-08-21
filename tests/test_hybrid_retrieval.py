@@ -1,5 +1,10 @@
-from qdrant_client import QdrantClient, models
+from types import SimpleNamespace
 
+import httpx
+from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
+
+from app import vector
 from app.vector import sparse_vector
 
 
@@ -24,3 +29,18 @@ def test_sparse_vector_is_stable_and_qdrant_can_fuse_dense_and_lexical_results()
         models.Prefetch(query=sparse_vector("预算审批"), using="lexical", filter=filters, limit=5),
     ], query=models.FusionQuery(fusion=models.Fusion.RRF), limit=3)
     assert [point.id for point in result.points] == [1]
+
+
+def test_collection_creation_tolerates_api_worker_startup_race(monkeypatch):
+    class RacingClient:
+        def get_collections(self):
+            return SimpleNamespace(collections=[])
+
+        def create_collection(self, *args, **kwargs):
+            raise UnexpectedResponse(409, "Conflict", b"collection already exists", httpx.Headers())
+
+        def create_payload_index(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(vector, "client", RacingClient())
+    vector.ensure_collection()

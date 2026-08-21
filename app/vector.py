@@ -3,6 +3,7 @@ from hashlib import sha256
 from types import SimpleNamespace
 from opencc import OpenCC
 from qdrant_client import AsyncQdrantClient, QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 from app.config import settings
 
 client = QdrantClient(url=settings.qdrant_url)
@@ -26,9 +27,13 @@ def ensure_collection():
         if SPARSE_VECTOR_NAME not in (info.config.params.sparse_vectors or {}):
             raise RuntimeError("Qdrant collection has no lexical sparse vector; use a new QDRANT_COLLECTION and reindex")
     else:
-        client.create_collection(settings.qdrant_collection,
-            vectors_config=models.VectorParams(size=settings.embedding_dimensions, distance=models.Distance.COSINE),
-            sparse_vectors_config={SPARSE_VECTOR_NAME: models.SparseVectorParams(modifier=models.Modifier.IDF)})
+        try:
+            client.create_collection(settings.qdrant_collection,
+                vectors_config=models.VectorParams(size=settings.embedding_dimensions, distance=models.Distance.COSINE),
+                sparse_vectors_config={SPARSE_VECTOR_NAME: models.SparseVectorParams(modifier=models.Modifier.IDF)})
+        except UnexpectedResponse as exc:
+            if exc.status_code != 409 or "already exists" not in exc.content.decode(errors="replace").lower():
+                raise
     for field in ("tenant_id", "document_id", "allowed_roles"):
         try:
             client.create_payload_index(settings.qdrant_collection, field, models.PayloadSchemaType.KEYWORD)
