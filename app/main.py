@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAI
 from qdrant_client import models
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import (
@@ -54,6 +54,7 @@ from app.db import (
     DocumentGrant,
     DocumentVersion,
     KnowledgeBase,
+    KnowledgeRelation,
     Principal as DbPrincipal,
     PrincipalRole,
     QueryEvent,
@@ -64,7 +65,7 @@ from app.db import (
     init_db,
 )
 from app.local_admin import authenticate_local_admin, ensure_local_admin
-from app.events import publish_document
+from app.events import publish_document, publish_documents
 from app.storage import put_file
 from app.vector import async_client as async_vector_client, client as vector_client, ensure_collection, search, search_async
 
@@ -333,6 +334,33 @@ def merge_relationships(edges: list[dict]) -> list[dict]:
         if edge.get("excerpt") and edge["excerpt"] not in item["excerpts"]:
             item["excerpts"].append(edge["excerpt"])
     return list(merged.values())
+
+
+def persist_relationships(principal: Principal, contexts: list[dict], edges: list[dict]) -> None:
+    """Keep evidence-backed relation candidates without making Qdrant authoritative."""
+    document_keys = {(item.get("document_id"), item.get("document_version")) for item in contexts}
+    with SessionLocal() as db:
+        versions = db.execute(select(Document.id, DocumentVersion.version, DocumentVersion.id).join(
+            DocumentVersion, DocumentVersion.document_id == Document.id
+        ).where(Document.tenant_id == principal.tenant_id)).all()
+        version_ids = {(document_id, version): version_id for document_id, version, version_id in versions
+                       if (document_id, version) in document_keys}
+        for edge in edges:
+            item = contexts[edge["evidence"] - 1]
+            version_id = version_ids.get((item.get("document_id"), item.get("document_version")))
+            if version_id is None:
+                continue
+            exists = db.scalar(select(KnowledgeRelation.id).where(
+                KnowledgeRelation.document_version_id == version_id,
+                KnowledgeRelation.chunk_index == item.get("chunk_index"),
+                KnowledgeRelation.source == edge["source"], KnowledgeRelation.target == edge["target"],
+                KnowledgeRelation.relation == edge["label"],
+            ))
+            if exists is None:
+                db.add(KnowledgeRelation(tenant_id=principal.tenant_id, document_version_id=version_id,
+                                         chunk_index=item.get("chunk_index") or 0, source=edge["source"],
+                                         target=edge["target"], relation=edge["label"], excerpt=edge["excerpt"]))
+        db.commit()
 
 
 def require_admin(principal: Principal) -> None:
@@ -613,6 +641,22 @@ async def reindex_document(document_id: str, p: Principal = Depends(principal_fr
     return {"document_id": document_id, "status": "queued"}
 
 
+@app.post("/api/v1/admin/documents/reindex-all")
+async def reindex_all_documents(p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    with SessionLocal() as db:
+        documents = db.scalars(select(Document).where(
+            Document.tenant_id == p.tenant_id, Document.status != "deleted"
+        )).all()
+        for document in documents:
+            document.status, document.error = "queued", None
+            audit(db, p, "document.reindex_all", "document", document.id, "accepted")
+        db.commit()
+    if documents:
+        await publish_documents([document.id for document in documents])
+    return {"queued": len(documents)}
+
+
 @app.post("/api/v1/documents/{document_id}/cancel")
 def cancel_document(document_id: str, p: Principal = Depends(principal_from_session)):
     require_admin(p)
@@ -641,6 +685,9 @@ def delete_document(document_id: str, p: Principal = Depends(principal_from_sess
                 models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id)),
             ])),
         )
+        db.execute(delete(KnowledgeRelation).where(KnowledgeRelation.document_version_id.in_(
+            select(DocumentVersion.id).where(DocumentVersion.document_id == document_id)
+        )))
         bump_knowledge_revision(p.tenant_id)
         doc.status, doc.deleted_at = "deleted", func.now()
         audit(db, p, "document.delete", "document", document_id, "accepted")
@@ -808,7 +855,9 @@ async def _graph(body: GraphRequest, p: Principal):
             {"role": "user", "content": f"问题：{body.query}\n\n证据：\n{evidence}\n\n只输出 JSON 数组，不要解释、标题或 Markdown。"},
         ],
     )
-    edges = merge_relationships(parse_relationships(completion.choices[0].message.content or "", contexts, body.query))
+    extracted = parse_relationships(completion.choices[0].message.content or "", contexts, body.query)
+    persist_relationships(p, contexts, extracted)
+    edges = merge_relationships(extracted)
     names = []
     for edge in edges:
         for name in (edge["source"], edge["target"]):
@@ -1058,6 +1107,9 @@ async def replace_document(document_id: str, file: UploadFile = File(...), p: Pr
             raise HTTPException(404, "document not found")
         version = doc.version + 1
         key = f"{p.tenant_id}/documents/{doc.id}/versions/{version}/source/{filename}"
+        db.execute(delete(KnowledgeRelation).where(KnowledgeRelation.document_version_id.in_(
+            select(DocumentVersion.id).where(DocumentVersion.document_id == doc.id)
+        )))
         doc.version, doc.object_key, doc.content_type, doc.status, doc.error = version, key, file.content_type, "queued", None
         db.add(DocumentVersion(id=str(uuid4()), document_id=doc.id, version=version,
                                source_object_key=key, source_filename=filename,
@@ -1088,3 +1140,26 @@ def admin_logs(p: Principal = Depends(principal_from_session)):
         return {"items": [{"id": x.id, "action": x.action, "resource_type": x.resource_type,
                             "resource_id": x.resource_id, "outcome": x.outcome,
                             "subject": x.subject, "created_at": x.created_at.isoformat()} for x in rows]}
+
+
+@app.get("/api/v1/admin/relations")
+def admin_relations(query: str = "", p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    with SessionLocal() as db:
+        statement = select(KnowledgeRelation, Document.title, DocumentVersion.version).join(
+            DocumentVersion, DocumentVersion.id == KnowledgeRelation.document_version_id
+        ).join(Document, Document.id == DocumentVersion.document_id).where(
+            KnowledgeRelation.tenant_id == p.tenant_id, Document.status != "deleted"
+        )
+        value = query.strip()
+        if value:
+            statement = statement.where((KnowledgeRelation.source.ilike(f"%{value}%")) |
+                                        (KnowledgeRelation.target.ilike(f"%{value}%")) |
+                                        (KnowledgeRelation.relation.ilike(f"%{value}%")))
+        rows = db.execute(statement.order_by(KnowledgeRelation.created_at.desc()).limit(200)).all()
+        return {"items": [{"id": relation.id, "source": relation.source, "target": relation.target,
+                            "relation": relation.relation, "excerpt": relation.excerpt,
+                            "document": title, "document_version": version,
+                            "chunk_index": relation.chunk_index,
+                            "created_at": relation.created_at.isoformat()}
+                           for relation, title, version in rows]}

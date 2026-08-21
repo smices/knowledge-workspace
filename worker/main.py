@@ -7,21 +7,40 @@ from qdrant_client import models
 from sqlalchemy import select
 from app.cache import bump_knowledge_revision
 from app.config import settings
-from app.db import Chunk, Document, DocumentGrant, DocumentVersion, Role, SessionLocal
+from app.db import Chunk, Document, DocumentGrant, DocumentVersion, KnowledgeRelation, Role, SessionLocal
 from app.storage import get_file
-from app.vector import client, ensure_collection
+from app.vector import client, ensure_collection, sparse_vector
 from worker.llm import embed
 from pypdf import PdfReader
+from docx import Document as DocxDocument
 
 
-def extract(content: bytes, content_type: str) -> str:
+def extract(content: bytes, content_type: str) -> list[tuple[str, list[str], int | None]]:
     if content_type == "application/pdf":
-        return "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(content)).pages)
-    return content.decode("utf-8", errors="replace").replace("\x00", " ")
+        return [(page.extract_text() or "", [], index + 1)
+                for index, page in enumerate(PdfReader(io.BytesIO(content)).pages)]
+    if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        section, items = [], []
+        for paragraph in DocxDocument(io.BytesIO(content)).paragraphs:
+            text = paragraph.text.strip()
+            if not text:
+                continue
+            match = re.search(r"\d+", paragraph.style.name) if paragraph.style.name.lower().startswith("heading") else None
+            if match:
+                level = int(match.group())
+                section = section[:level - 1] + [text]
+            else:
+                items.append((text, list(section), None))
+        return items
+    return [(content.decode("utf-8", errors="replace").replace("\x00", " "), [], None)]
 
-def chunks(text: str, size=900, overlap=120):
-    text = re.sub(r"\s+", " ", text).strip()
-    return [text[i:i + size] for i in range(0, len(text), size - overlap) if text[i:i + size].strip()]
+def chunks(segments: list[tuple[str, list[str], int | None]], size=900, overlap=120):
+    result = []
+    for text, section_path, page in segments:
+        text = re.sub(r"\s+", " ", text).strip()
+        result.extend((text[i:i + size], section_path, page)
+                      for i in range(0, len(text), size - overlap) if text[i:i + size].strip())
+    return result
 
 async def run():
     ensure_collection()
@@ -45,19 +64,23 @@ async def run():
                     continue
                 doc.status = "processing"; db.commit()
                 try:
-                    text = extract(get_file(doc.object_key), doc.content_type)
-                    pieces = chunks(text)
+                    pieces = chunks(extract(get_file(doc.object_key), doc.content_type))
+                    if not pieces:
+                        raise RuntimeError("no extractable text")
                     vectors = []
                     for start in range(0, len(pieces), 32):
-                        vectors.extend(embed(pieces[start:start + 32]))
+                        vectors.extend(embed([piece for piece, _, _ in pieces[start:start + 32]]))
                     db.refresh(doc)
                     if doc.status not in {"canceled", "deleted"}:
                         version = db.scalar(select(DocumentVersion).where(DocumentVersion.document_id == doc.id).order_by(DocumentVersion.version.desc()))
-                        if version:
-                            db.query(Chunk).filter(Chunk.document_version_id == version.id).delete(synchronize_session=False)
-                            db.add_all([Chunk(id=str(uuid5(NAMESPACE_URL, f"{version.id}:{i}")), document_version_id=version.id,
-                                              chunk_index=i, content=piece, content_hash=sha256(piece.encode()).hexdigest())
-                                        for i, piece in enumerate(pieces)])
+                        if version is None:
+                            raise RuntimeError("document version missing")
+                        db.query(Chunk).filter(Chunk.document_version_id == version.id).delete(synchronize_session=False)
+                        db.query(KnowledgeRelation).filter(KnowledgeRelation.document_version_id == version.id).delete(synchronize_session=False)
+                        db.add_all([Chunk(id=str(uuid5(NAMESPACE_URL, f"{version.id}:{i}")), document_version_id=version.id,
+                                          chunk_index=i, content=piece, content_hash=sha256(piece.encode()).hexdigest(),
+                                          section_path=section_path, page=page)
+                                    for i, (piece, section_path, page) in enumerate(pieces)])
                         roles = [
                             name
                             for (name,) in db.query(Role.name)
@@ -66,7 +89,14 @@ async def run():
                             .all()
                         ]
                         client.delete(settings.qdrant_collection, models.FilterSelector(filter=models.Filter(must=[models.FieldCondition(key="document_id", match=models.MatchValue(value=doc.id))])))
-                        client.upsert(settings.qdrant_collection, [models.PointStruct(id=str(uuid5(NAMESPACE_URL, f"{doc.id}:{i}")), vector=v, payload={"tenant_id": doc.tenant_id, "document_id": doc.id, "title": doc.title, "content": piece, "allowed_roles": roles, "source_uri": doc.object_key, "chunk_index": i}) for i, (piece, v) in enumerate(zip(pieces, vectors))])
+                        client.upsert(settings.qdrant_collection, [models.PointStruct(
+                            id=str(uuid5(NAMESPACE_URL, f"{version.id}:{i}")),
+                            vector={"": v, "lexical": sparse_vector(piece)},
+                            payload={"tenant_id": doc.tenant_id, "document_id": doc.id,
+                                     "document_version": version.version, "title": doc.title,
+                                     "content": piece, "allowed_roles": roles, "source_uri": doc.object_key,
+                                     "chunk_index": i, "section_path": section_path, "page": page},
+                        ) for i, ((piece, section_path, page), v) in enumerate(zip(pieces, vectors))])
                         bump_knowledge_revision(doc.tenant_id)
                         doc.status = "ready"; doc.error = None
                 except Exception as exc:

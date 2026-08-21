@@ -14,6 +14,7 @@
 | `1Panel-dev/MaxKB` | `v2.10.5-lts` | 私有化部署、初始化、管理和企业集成体验 | 作为运维和产品体验参考 |
 | `QuivrHQ/quivr` | `core-0.0.33` | 轻量 RAG Core、Pipeline 组合、可插拔模型思路 | 仅参考模块边界 |
 | `qdrant/qdrant-rag-eval` | 无 latest release | Dense/Sparse/Hybrid、Rerank、RAGAS、检索评测 | 参考评测方法和实验结构 |
+| Qdrant 官方 Query API | 2026-08-21 文档核验 | Sparse vector、RRF 融合与受 payload filter 约束的候选检索 | 使用现有 `qdrant-client` 独立实现 |
 | Project Gutenberg | eBooks 23863、23950、23962、24264 | 四大古典名著公开测试语料 | 原文及其 Gutenberg License 随 `eval/corpus/` 保留 |
 
 ## 记录规则
@@ -37,6 +38,7 @@
 - https://github.com/QuivrHQ/quivr
 - https://github.com/QuivrHQ/quivr/releases/tag/core-0.0.33
 - https://github.com/qdrant/qdrant-rag-eval
+- https://qdrant.tech/documentation/search/hybrid-queries/
 - https://www.gutenberg.org/ebooks/23863
 - https://www.gutenberg.org/ebooks/23950
 - https://www.gutenberg.org/ebooks/23962

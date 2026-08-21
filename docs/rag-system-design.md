@@ -79,8 +79,8 @@ Qdrant 只负责向量索引和检索 payload，不作为文档、权限、任�
 
 查询路径：
 API → 身份认证 → PostgreSQL 获取有效角色/权限
-    → Embedding → Qdrant(tenant + RBAC filter)
-    → 可选 rerank → LLM → answer + citations
+→ Dense + sparse embedding → Qdrant RRF(tenant + RBAC filter)
+    → evidence co-occurrence gate → LLM → answer + citations
 ```
 
 认证身份来自 IdP；应用角色、应用内启用状态和审计记录以 PostgreSQL 为事实源。首次 OIDC 安装创建唯一的本地初始化管理员，凭安装 Secret 登录，仅可配置 IdP 账号的应用权限，且不承载 IdP 资料或密码。
@@ -214,8 +214,8 @@ Point ID 使用 `document_version_id:chunk_id`，禁止只使用 `document_id:ch
 3. 生成 query embedding。
 4. Qdrant 查询必须同时包含：
    - `tenant_id == principal.tenant_id`
-   - `allowed_roles` 与有效角色集合有交集
-5. 结果可进行 rerank，但不能扩大授权范围。
+- `allowed_roles` 与有效角色集合有交集
+5. Dense 与 sparse 结果在 Qdrant 内使用 RRF 融合；实体共现门槛仅缩小已授权候选，不能替代权限过滤。
 6. 构造上下文并生成答案。
 7. 返回答案、引用、检索分数、模型版本和 trace ID。
 
@@ -317,6 +317,7 @@ GET    /health/ready
 - Qdrant 查询延迟、命中数和过滤后结果数。
 - Embedding/LLM token、耗时和失败率。
 - RBAC 拒绝计数，不记录不必要的正文。
+- 关系图谱仅持久化含 document version、chunk、原文片段的直接证据边；文档替换、重建或删除时必须失效对应边。
 
 验收门槛：
 
@@ -336,6 +337,7 @@ GET    /health/ready
 | 文档权限 | 文档级 RBAC；第一阶段不引入目录或组织架构继承 |
 | 规模基线 | 单文件 ≤100MB；日增 ≤1万份；并发上传 ≤20 |
 | 性能目标 | 上传受理 ≤1秒；检索 P95 ≤500ms；问答首 token ≤2秒 |
+| 检索策略 | Qdrant dense + hashed lexical sparse vector，经 RRF 融合；collection 必须包含 `lexical` sparse vector |
 | 模型接入 | 统一使用 OpenAI-compatible 网关，网关负责云模型和 IDC 模型路由 |
 | IDC 运维 | 本项目提供本地 Compose；IDC Kafka、Redis、MinIO、Qdrant 由平台团队托管 |
 | 保留策略 | 软删除 30 天；审计保留 1 年；原文件按业务规则保留 |
