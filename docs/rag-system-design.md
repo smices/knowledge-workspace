@@ -80,7 +80,7 @@ Qdrant 只负责向量索引和检索 payload，不作为文档、权限、任�
 查询路径：
 API → 身份认证 → PostgreSQL 获取有效角色/权限
 → Dense + sparse embedding → Qdrant RRF(tenant + RBAC filter)
-    → evidence co-occurrence gate → LLM → answer + citations
+    → version-scoped entity-alias/evidence co-occurrence gate → LLM → answer + citations
 ```
 
 认证身份来自 IdP；应用角色、应用内启用状态和审计记录以 PostgreSQL 为事实源。首次 OIDC 安装创建唯一的本地初始化管理员，凭安装 Secret 登录，仅可配置 IdP 账号的应用权限，且不承载 IdP 资料或密码。
@@ -111,6 +111,7 @@ API → 身份认证 → PostgreSQL 获取有效角色/权限
 - `ingestion_jobs`
 - `event_outbox`
 - `audit_events`
+- `entity_aliases`（实体标准名、原文称谓、版本内共同出现的证据、审核状态）
 
 关键约束：
 
@@ -162,7 +163,7 @@ Kafka key 使用 `tenant_id:document_id`，保证同一文档事件有序。Cons
 只用于：
 
 - L0 合并同一进程内并发的完全相同问答；最后一个等待者取消时，中断底层检索与生成。
-- L1 复用规范化后完全相同的问题，缓存键包含租户、角色、知识版本、模型、Prompt 和生成参数。
+- L1 复用规范化后完全相同的问题，缓存键包含租户、角色、知识版本、模型、Prompt/检索契约版本和生成参数；改变检索或答案证据契约时提升该版本，避免复用旧语义答案。
 - L2 仅在问题实体集合、检索证据集合一致且当前嵌入模型的向量相似度不低于 0.70 时复用；只缓存状态为“已回答”且每条结论均被证据直接支持的答案。
 - 文档成功完成索引或删除时提升租户知识版本；旧版本缓存不再命中，无需全量扫描删除。
 - 幂等短锁和租约。
@@ -216,8 +217,10 @@ Point ID 使用 `document_version_id:chunk_id`，禁止只使用 `document_id:ch
    - `tenant_id == principal.tenant_id`
 - `allowed_roles` 与有效角色集合有交集
 5. Dense 与 sparse 结果在 Qdrant 内使用 RRF 融合；实体共现门槛仅缩小已授权候选，不能替代权限过滤。
-6. 构造上下文并生成答案。
-7. 返回答案、引用、检索分数、模型版本和 trace ID。
+6. Worker 只从“标准名（简称/又名/别名）称谓”这类显式文本生成候选；管理员只能在标准名与称谓共同出现的同一 chunk 中创建或批准映射。
+7. 仅 `approved` 映射可扩展检索，且仅在该映射所属的当前文档版本内生效；替换、重建或删除版本时删除映射。不得采用模糊昵称猜测。
+8. 构造上下文并生成答案。
+9. 返回答案、引用、检索分数、模型版本和 trace ID。
 
 ### 问答响应
 
@@ -230,6 +233,9 @@ Point ID 使用 `document_version_id:chunk_id`，禁止只使用 `document_id:ch
   "feedback_token": "user-scoped-signature",
   "evidence_contract": [
     {"claim": "...", "evidence": [1], "support": "supported", "confidence": 0.92}
+  ],
+  "entity_bindings": [
+    {"entity": "标准名", "matched_mention": "原文称谓", "alias_id": "uuid", "status": "approved", "confidence": 0.92, "evidence": [1]}
   ],
   "citations": [
     {
@@ -274,8 +280,7 @@ POST   /api/v1/retrieval/search
 POST   /api/v1/rag/answer
 POST   /api/v1/admin/roles
 POST   /api/v1/admin/document-grants
-GET    /health/live
-GET    /health/ready
+GET    /health
 ```
 
 接口应使用版本前缀、trace ID、统一错误格式和幂等键。上传返回 `202 Accepted` 与 `document_version_id`，不等待向量化完成。
@@ -328,6 +333,7 @@ GET    /health/ready
 5. Qdrant 清空后可由 PostgreSQL + MinIO 重建。
 6. Kafka、worker、Qdrant、MinIO 任一短暂不可用时不会静默丢资料。
 7. 返回答案的每个关键依据都能定位到 citation。
+8. 已批准别名只命中所属版本；候选或拒绝别名不得影响检索、问答或关系图谱。
 
 ## 11. 已确认的项目决策
 

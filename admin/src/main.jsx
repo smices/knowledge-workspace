@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ProTable, StatisticCard } from '@ant-design/pro-components';
-import { Alert, Avatar, Badge, Button, Card, Descriptions, List, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Avatar, Badge, Button, Card, Descriptions, Input, List, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography, Upload, message } from 'antd';
 import { DatabaseOutlined, FileSearchOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
 
 const api = async (url, options = {}) => {
@@ -158,4 +158,21 @@ function Relations() {
   return <ProTable rowKey="id" headerTitle={languageText(t, '关系证据', 'Relation evidence')} request={async () => ({ data: (await api('/api/v1/admin/relations')).items, success: true })} columns={columns} search={false} />;
 }
 
-export { Dashboard, Documents, Tasks, Logs, Members, Relations };
+function EntityAliases() {
+  const t = useAdminLanguage();
+  const [items, setItems] = useState([]); const [draft, setDraft] = useState(null);
+  const load = async () => { try { setItems((await api('/api/v1/admin/entity-aliases')).items); } catch (e) { message.error(e.message); } };
+  useEffect(() => { load(); }, []);
+  const update = async (id, status) => { try { await api(`/api/v1/admin/entity-aliases/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); message.success(languageText(t, '称谓状态已更新', 'Alias updated')); load(); } catch (e) { message.error(e.message); } };
+  const create = async () => { try { await api('/api/v1/admin/entity-aliases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...draft, chunk_index: Number(draft.chunk_index) }) }); message.success(languageText(t, '候选称谓已创建', 'Alias candidate created')); setDraft(null); load(); } catch (e) { message.error(e.message); } };
+  const columns = [
+    { title: languageText(t, '标准实体', 'Canonical entity'), dataIndex: 'canonical' }, { title: languageText(t, '原文称谓', 'Source mention'), dataIndex: 'alias' },
+    { title: t.document, dataIndex: 'document', ellipsis: true }, { title: t.version, dataIndex: 'document_version' }, { title: languageText(t, '证据块', 'Evidence chunk'), dataIndex: 'chunk_index' },
+    { title: t.status, dataIndex: 'status', render: (value) => <Tag color={value === 'approved' ? 'green' : value === 'rejected' ? 'red' : 'gold'}>{value}</Tag> },
+    { title: languageText(t, '证据片段', 'Evidence'), dataIndex: 'excerpt', ellipsis: true },
+    { title: t.actions, render: (_, row) => row.status === 'candidate' ? <Space><Button type="link" onClick={() => update(row.id, 'approved')}>{languageText(t, '批准', 'Approve')}</Button><Button type="link" danger onClick={() => update(row.id, 'rejected')}>{languageText(t, '拒绝', 'Reject')}</Button></Space> : '—' },
+  ];
+  return <Card title={languageText(t, '实体称谓审核', 'Entity alias review')} extra={<Button type="primary" onClick={() => setDraft({ document_id: '', chunk_index: 0, canonical: '', alias: '' })}>{languageText(t, '新建候选', 'New candidate')}</Button>}><Alert showIcon type="info" message={languageText(t, '只有已批准、且在同一原文块共同出现的称谓映射才参与检索；文档重建或替换会使其失效。', 'Only approved mappings with same-chunk evidence participate in retrieval. Reindexing or replacement invalidates them.')} style={{ marginBottom: 16 }} /><Table rowKey="id" dataSource={items} columns={columns} pagination={{ pageSize: 20 }} /><Modal title={languageText(t, '新建称谓候选', 'New alias candidate')} open={Boolean(draft)} onCancel={() => setDraft(null)} onOk={create}><Space direction="vertical" style={{ width: '100%' }}><Input placeholder={languageText(t, '文档 ID', 'Document ID')} value={draft?.document_id} onChange={(e) => setDraft({ ...draft, document_id: e.target.value })} /><Input placeholder={languageText(t, '证据块序号', 'Evidence chunk index')} value={draft?.chunk_index} onChange={(e) => setDraft({ ...draft, chunk_index: e.target.value })} /><Input placeholder={languageText(t, '标准实体', 'Canonical entity')} value={draft?.canonical} onChange={(e) => setDraft({ ...draft, canonical: e.target.value })} /><Input placeholder={languageText(t, '原文称谓', 'Source mention')} value={draft?.alias} onChange={(e) => setDraft({ ...draft, alias: e.target.value })} /></Space></Modal></Card>;
+}
+
+export { Dashboard, Documents, Tasks, Logs, Members, Relations, EntityAliases };

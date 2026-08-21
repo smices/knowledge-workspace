@@ -6,6 +6,7 @@ import hmac
 import json
 import re
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
 from time import perf_counter
@@ -53,6 +54,7 @@ from app.db import (
     Document,
     DocumentGrant,
     DocumentVersion,
+    EntityAlias,
     KnowledgeBase,
     KnowledgeRelation,
     Principal as DbPrincipal,
@@ -67,10 +69,12 @@ from app.db import (
 from app.local_admin import authenticate_local_admin, ensure_local_admin
 from app.events import publish_document, publish_documents
 from app.storage import put_file
-from app.vector import async_client as async_vector_client, client as vector_client, ensure_collection, search, search_async
+from app.vector import (_focus_parts, async_client as async_vector_client, client as vector_client,
+                        ensure_collection, normalize_mention, search, search_async)
 
 llm = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
 async_llm = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+CACHE_CONTRACT_VERSION = "entity-alias-v1"
 
 
 @asynccontextmanager
@@ -150,6 +154,17 @@ class MemberStatusRequest(BaseModel):
     status: Literal["active", "disabled"]
 
 
+class EntityAliasRequest(BaseModel):
+    document_id: str = Field(min_length=36, max_length=36)
+    chunk_index: int = Field(ge=0)
+    canonical: str = Field(min_length=2, max_length=255)
+    alias: str = Field(min_length=2, max_length=255)
+
+
+class EntityAliasStatusRequest(BaseModel):
+    status: Literal["approved", "rejected"]
+
+
 def hmac_compare(left: str, right: str) -> bool:
     import hmac
     return bool(left) and hmac.compare_digest(left, right)
@@ -190,6 +205,44 @@ def citations_for(points, contexts):
              "source_uri": item.get("source_uri"), "score": point.score,
              "content": item.get("content", "")}
             for point, item in zip(points, contexts)]
+
+
+def approved_aliases(principal: Principal, query: str) -> tuple[dict, list[dict]]:
+    entities = set(_focus_parts(query))
+    if not entities:
+        return {}, []
+    with SessionLocal() as db:
+        rows = db.execute(select(EntityAlias, DocumentVersion.document_id, DocumentVersion.version).join(
+            DocumentVersion, DocumentVersion.id == EntityAlias.document_version_id
+        ).join(Document, Document.id == DocumentVersion.document_id).where(
+            EntityAlias.tenant_id == principal.tenant_id, EntityAlias.status == "approved",
+            Document.status != "deleted", Document.version == DocumentVersion.version,
+        )).all()
+    records = [{"id": alias.id, "canonical": normalize_mention(alias.canonical),
+                "alias": normalize_mention(alias.alias), "document_id": document_id,
+                "document_version": version,
+                "chunk_index": alias.chunk_index, "confidence": 0.92}
+               for alias, document_id, version in rows if normalize_mention(alias.canonical) in entities]
+    mapping = {}
+    for item in records:
+        mapping.setdefault(item["canonical"], []).append({key: item[key] for key in ("alias", "document_id", "document_version")})
+    return mapping, records
+
+
+def alias_bindings(contexts: list[dict], records: list[dict]) -> list[dict]:
+    bindings = []
+    for index, context in enumerate(contexts, 1):
+        content = normalize_mention(str(context.get("content", "")))
+        for record in records:
+            if (str(record["document_id"]) == str(context.get("document_id"))
+                    and str(record["document_version"]) == str(context.get("document_version"))
+                    and record["alias"] in content):
+                binding = {"entity": record["canonical"], "matched_mention": record["alias"],
+                           "alias_id": record["id"], "status": "approved",
+                           "confidence": record["confidence"], "evidence": [index]}
+                if binding not in bindings:
+                    bindings.append(binding)
+    return bindings
 
 
 ANSWER_STATE_LABELS = {
@@ -287,7 +340,7 @@ def normalize_relation(label: str) -> str:
 STANDARD_RELATIONS = frozenset(RELATION_ALIASES.values())
 
 
-def parse_relationships(raw: str, contexts: list[dict], query: str | None = None) -> list[dict]:
+def parse_relationships(raw: str, contexts: list[dict], query: str | None = None, aliases=None) -> list[dict]:
     """Keep only direct, source-bound relations emitted by the model."""
     start, end = raw.find("["), raw.rfind("]")
     if start < 0 or end < start:
@@ -309,8 +362,18 @@ def parse_relationships(raw: str, contexts: list[dict], query: str | None = None
             continue
         content = str(contexts[evidence - 1].get("content", ""))
         key = (source, target, label, evidence)
+        def mentions(entity: str) -> list[str]:
+            values = [entity]
+            for item in (aliases or {}).get(normalize_mention(entity), []):
+                if isinstance(item, str) or (str(item.get("document_id")) == str(contexts[evidence - 1].get("document_id"))
+                                            and str(item.get("document_version")) == str(contexts[evidence - 1].get("document_version"))):
+                    values.append(item if isinstance(item, str) else item["alias"])
+            return values
+        source_mentions, target_mentions = mentions(source), mentions(target)
         if (not source or not target or source == target or len(source) > 32 or len(target) > 32
-                or not label or len(label) > 24 or source not in content or target not in content
+                or not label or len(label) > 24
+                or not any(normalize_mention(value) in normalize_mention(content) for value in source_mentions)
+                or not any(normalize_mention(value) in normalize_mention(content) for value in target_mentions)
                 or (query is not None and (source not in query or target not in query)) or key in seen):
             continue
         seen.add(key)
@@ -688,6 +751,9 @@ def delete_document(document_id: str, p: Principal = Depends(principal_from_sess
         db.execute(delete(KnowledgeRelation).where(KnowledgeRelation.document_version_id.in_(
             select(DocumentVersion.id).where(DocumentVersion.document_id == document_id)
         )))
+        db.execute(delete(EntityAlias).where(EntityAlias.document_version_id.in_(
+            select(DocumentVersion.id).where(DocumentVersion.document_id == document_id)
+        )))
         bump_knowledge_revision(p.tenant_id)
         doc.status, doc.deleted_at = "deleted", func.now()
         audit(db, p, "document.delete", "document", document_id, "accepted")
@@ -700,7 +766,7 @@ def delete_document(document_id: str, p: Principal = Depends(principal_from_sess
 def retrieve(body: SearchRequest, p: Principal = Depends(principal_from_session)):
     started = perf_counter()
     revision = knowledge_revision(p.tenant_id)
-    key = cache_key("retrieval-v3", p.tenant_id, sorted(p.roles), revision,
+    key = cache_key("retrieval", CACHE_CONTRACT_VERSION, p.tenant_id, sorted(p.roles), revision,
                     normalize_query(body.query), body.limit, settings.embedding_model)
     cached = cache_get(key)
     if cached is not None:
@@ -711,18 +777,21 @@ def retrieve(body: SearchRequest, p: Principal = Depends(principal_from_session)
         log_query(p, body.query, "retrieval", 0, started)
         return result
     vector = llm.embeddings.create(model=settings.embedding_model, input=body.query).data[0].embedding
-    points = search(vector, p.tenant_id, set(p.roles), body.limit, body.query)
-    result = {"results": [dict(point.payload or {}, score=point.score) for point in points]}
+    aliases, records = approved_aliases(p, body.query)
+    points = search(vector, p.tenant_id, set(p.roles), body.limit, body.query, aliases)
+    contexts = [point.payload or {} for point in points]
+    result = {"results": [dict(point.payload or {}, score=point.score) for point in points],
+              "entity_bindings": alias_bindings(contexts, records)}
     cache_put(key, result, 120)
     log_query(p, body.query, "retrieval", len(points), started)
     return result
 
 
 def _answer_result(answer: str, state: str, citations: list[dict], contract: list[dict],
-                   revision: int) -> dict:
+                   revision: int, bindings: list[dict] | None = None) -> dict:
     return {"answer_id": str(uuid4()), "answer": answer, "answer_state": state,
             "answer_state_label": ANSWER_STATE_LABELS[state], "evidence_contract": contract,
-            "citations": citations, "graph_available": state == "answered",
+            "citations": citations, "entity_bindings": bindings or [], "graph_available": state == "answered",
             "cache": {"level": "generated", "hit": False, "knowledge_revision": revision}}
 
 
@@ -751,7 +820,7 @@ def _with_feedback(result: dict, p: Principal) -> dict:
 
 
 async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
-                       exact_key: str, semantic_bucket: str) -> dict:
+                       exact_key: str, semantic_bucket: str, aliases: dict[str, list[str]], records: list[dict]) -> dict:
     started = perf_counter()
     if not p.roles:
         log_query(p, body.query, "answer", 0, started)
@@ -761,7 +830,7 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
     vector = (await async_llm.embeddings.create(
         model=settings.embedding_model, input=body.query
     )).data[0].embedding
-    points = await search_async(vector, p.tenant_id, set(p.roles), min(body.limit, 3), body.query)
+    points = await search_async(vector, p.tenant_id, set(p.roles), min(body.limit, 3), body.query, aliases)
     contexts = [point.payload or {} for point in points]
     if not contexts:
         log_query(p, body.query, "answer", 0, started)
@@ -799,7 +868,7 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
     citations = citations_for(points, contexts)
     state = answer_state(answer_text, contexts)
     contract = evidence_contract(answer_text, contexts, state)
-    result = _answer_result(answer_text, state, citations, contract, revision)
+    result = _answer_result(answer_text, state, citations, contract, revision, alias_bindings(contexts, records))
     cache_put(exact_key, result, 21600 if state == "answered" else 300)
     if state == "answered" and contract and all(
             item["support"] == "supported" and item["confidence"] >= 0.85 for item in contract):
@@ -812,13 +881,14 @@ async def _answer(body: AnswerRequest, p: Principal):
     revision = knowledge_revision(p.tenant_id)
     scope = (p.tenant_id, sorted(p.roles), revision, body.limit, body.temperature,
              settings.embedding_model, settings.chat_model, "answer-prompt-v3")
-    exact_key = cache_key("answer-v3", *scope, normalize_query(body.query))
+    exact_key = cache_key("answer", CACHE_CONTRACT_VERSION, *scope, normalize_query(body.query))
     cached = cache_get(exact_key)
     if cached is not None:
         return _with_feedback(_cache_result(cached, "l1", revision), p)
-    semantic_bucket = cache_key("answer-semantic-v1", *scope)
+    aliases, records = approved_aliases(p, body.query)
+    semantic_bucket = cache_key("answer-semantic", CACHE_CONTRACT_VERSION, *scope)
     result, joined = await singleflight(
-        exact_key, lambda: _answer_work(body, p, revision, exact_key, semantic_bucket)
+        exact_key, lambda: _answer_work(body, p, revision, exact_key, semantic_bucket, aliases, records)
     )
     result = _cache_result(result, "l0", revision) if joined else result
     return _with_feedback(result, p)
@@ -827,7 +897,7 @@ async def _answer(body: AnswerRequest, p: Principal):
 async def _graph(body: GraphRequest, p: Principal):
     started = perf_counter()
     revision = knowledge_revision(p.tenant_id)
-    key = cache_key("graph-v3", p.tenant_id, sorted(p.roles), revision,
+    key = cache_key("graph", CACHE_CONTRACT_VERSION, p.tenant_id, sorted(p.roles), revision,
                     normalize_query(body.query), body.limit,
                     settings.embedding_model, settings.chat_model)
     cached = cache_get(key)
@@ -836,7 +906,8 @@ async def _graph(body: GraphRequest, p: Principal):
     if not p.roles:
         return {"nodes": [], "edges": [], "citations": [], "message": "没有可访问的知识。"}
     vector = (await async_llm.embeddings.create(model=settings.embedding_model, input=body.query)).data[0].embedding
-    points = await search_async(vector, p.tenant_id, set(p.roles), min(body.limit, 3), body.query)
+    aliases, records = approved_aliases(p, body.query)
+    points = await search_async(vector, p.tenant_id, set(p.roles), min(body.limit, 3), body.query, aliases)
     contexts = [point.payload or {} for point in points]
     if not contexts:
         log_query(p, body.query, "graph", 0, started)
@@ -845,6 +916,7 @@ async def _graph(body: GraphRequest, p: Principal):
         f"[证据 {index + 1}] {item.get('title')}，第 {item.get('chunk_index')} 段\n{item.get('content', '')[:720]}"
         for index, item in enumerate(contexts)
     )
+    alias_note = "；".join(f"{canonical} 可由原文称谓 {', '.join(item if isinstance(item, str) else item['alias'] for item in values)} 指代" for canonical, values in aliases.items())
     completion = await async_llm.chat.completions.create(
         model=settings.chat_model,
         temperature=0,
@@ -852,10 +924,10 @@ async def _graph(body: GraphRequest, p: Principal):
         reasoning_effort="none",
         messages=[
             {"role": "system", "content": "你是原文证据关系抽取器。只提取问题点名实体之间、且由证据直接说明的关系，不返回其他实体对，绝不补充常识或推断。实体必须逐字出现在所引证据中。关系可以是技术、流程、组织或业务领域的任意简洁术语（例如 depends_on、owned_by、approved_by、triggers、blocks）；保留原文明确术语，不要强行套用小型固定词表。只输出 JSON 数组，最多 8 项，不要 Markdown：[{\"source\":\"实体甲\",\"target\":\"实体乙\",\"relation\":\"关系\",\"evidence\":1}]。evidence 是证据编号。"},
-            {"role": "user", "content": f"问题：{body.query}\n\n证据：\n{evidence}\n\n只输出 JSON 数组，不要解释、标题或 Markdown。"},
+            {"role": "user", "content": f"问题：{body.query}\n\n已审核原文称谓：{alias_note or '无'}\n\n证据：\n{evidence}\n\n只输出 JSON 数组，不要解释、标题或 Markdown。"},
         ],
     )
-    extracted = parse_relationships(completion.choices[0].message.content or "", contexts, body.query)
+    extracted = parse_relationships(completion.choices[0].message.content or "", contexts, body.query, aliases)
     persist_relationships(p, contexts, extracted)
     edges = merge_relationships(extracted)
     names = []
@@ -865,6 +937,7 @@ async def _graph(body: GraphRequest, p: Principal):
                 names.append(name)
     result = {"nodes": [{"id": name, "label": name} for name in names], "edges": edges,
               "citations": citations_for(points, contexts),
+              "entity_bindings": alias_bindings(contexts, records),
               "message": "" if edges else "当前证据不足以确认人物或实体关系。"}
     cache_put(key, result, 300)
     log_query(p, body.query, "graph", len(edges), started)
@@ -1110,6 +1183,9 @@ async def replace_document(document_id: str, file: UploadFile = File(...), p: Pr
         db.execute(delete(KnowledgeRelation).where(KnowledgeRelation.document_version_id.in_(
             select(DocumentVersion.id).where(DocumentVersion.document_id == doc.id)
         )))
+        db.execute(delete(EntityAlias).where(EntityAlias.document_version_id.in_(
+            select(DocumentVersion.id).where(DocumentVersion.document_id == doc.id)
+        )))
         doc.version, doc.object_key, doc.content_type, doc.status, doc.error = version, key, file.content_type, "queued", None
         db.add(DocumentVersion(id=str(uuid4()), document_id=doc.id, version=version,
                                source_object_key=key, source_filename=filename,
@@ -1163,3 +1239,70 @@ def admin_relations(query: str = "", p: Principal = Depends(principal_from_sessi
                             "chunk_index": relation.chunk_index,
                             "created_at": relation.created_at.isoformat()}
                            for relation, title, version in rows]}
+
+
+@app.get("/api/v1/admin/entity-aliases")
+def admin_entity_aliases(p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    with SessionLocal() as db:
+        rows = db.execute(select(EntityAlias, Document.title, DocumentVersion.version).join(
+            DocumentVersion, DocumentVersion.id == EntityAlias.document_version_id
+        ).join(Document, Document.id == DocumentVersion.document_id).where(
+            EntityAlias.tenant_id == p.tenant_id, Document.status != "deleted"
+        ).order_by(EntityAlias.status, EntityAlias.created_at.desc()).limit(300)).all()
+        return {"items": [{"id": item.id, "canonical": item.canonical, "alias": item.alias,
+                            "status": item.status, "source": item.source, "excerpt": item.excerpt,
+                            "chunk_index": item.chunk_index, "document": title,
+                            "document_version": version, "created_at": item.created_at.isoformat()}
+                           for item, title, version in rows]}
+
+
+@app.post("/api/v1/admin/entity-aliases", status_code=201)
+def create_entity_alias(body: EntityAliasRequest, p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    canonical, alias = body.canonical.strip(), body.alias.strip()
+    if normalize_mention(canonical) == normalize_mention(alias):
+        raise HTTPException(422, "canonical and alias must differ")
+    with SessionLocal() as db:
+        version = db.scalar(select(DocumentVersion).join(Document).where(
+            Document.id == body.document_id, Document.tenant_id == p.tenant_id,
+            Document.version == DocumentVersion.version, Document.status != "deleted"
+        ))
+        if version is None:
+            raise HTTPException(404, "current document version not found")
+        chunk = db.scalar(select(Chunk).where(
+            Chunk.document_version_id == version.id, Chunk.chunk_index == body.chunk_index
+        ))
+        content = normalize_mention(chunk.content) if chunk else ""
+        if not chunk or normalize_mention(canonical) not in content or normalize_mention(alias) not in content:
+            raise HTTPException(422, "canonical and alias must co-occur in the cited chunk")
+        item = db.scalar(select(EntityAlias).where(
+            EntityAlias.document_version_id == version.id,
+            EntityAlias.canonical == canonical, EntityAlias.alias == alias,
+        ))
+        if item is None:
+            item = EntityAlias(tenant_id=p.tenant_id, document_version_id=version.id,
+                               canonical=canonical, alias=alias, chunk_index=chunk.chunk_index,
+                               excerpt=chunk.content[:600], source="admin", created_by=p.subject)
+            db.add(item)
+            db.flush()
+            audit(db, p, "entity_alias.create", "entity_alias", item.id, "accepted")
+            db.commit()
+        return {"id": item.id, "status": item.status}
+
+
+@app.put("/api/v1/admin/entity-aliases/{alias_id}")
+def update_entity_alias(alias_id: str, body: EntityAliasStatusRequest,
+                        p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    with SessionLocal() as db:
+        item = db.scalar(select(EntityAlias).where(EntityAlias.id == alias_id, EntityAlias.tenant_id == p.tenant_id))
+        if item is None:
+            raise HTTPException(404, "entity alias not found")
+        item.status = body.status
+        item.approved_by = p.subject if body.status == "approved" else None
+        item.approved_at = datetime.now(UTC).replace(tzinfo=None) if body.status == "approved" else None
+        audit(db, p, f"entity_alias.{body.status}", "entity_alias", item.id, "accepted")
+        db.commit()
+    bump_knowledge_revision(p.tenant_id)
+    return {"id": alias_id, "status": body.status}
