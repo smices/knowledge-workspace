@@ -32,14 +32,16 @@
 - 检索 p95 ≤ 2 秒（本地 Ollama 基线）。
 - 问答 p95 ≤ 60 秒（本地 qwen3:8b 基线）。
 - 文档命中率 ≥ 90%。
+- Retrieval MRR ≥ 0.75，NDCG ≥ 0.75。
 - Citation 覆盖率 = 100%。
+- 证据契约中直接支持结论比例 ≥ 85%。
 
 运行：
 
 ```bash
 source .venv/bin/activate
 python eval/init_corpus.py --base-url http://127.0.0.1:8000
-python eval/benchmark.py --base-url http://127.0.0.1:18024
+python eval/benchmark.py --base-url http://127.0.0.1:18024 --check
 ```
 
 初始化接口仅用于已显式启用 `AUTH_MODE=dev` 的本地评测环境。生产环境不会自动导入测试资料。
@@ -52,3 +54,5 @@ eval/report.md
 ```
 
 仓库中的现有报告是扩充《红楼梦》用例前的 12 题历史基线；运行当前 16 题评测后会覆盖为最新结果。
+
+评测将检索与生成分开：检索报告文档命中、MRR、NDCG；生成报告 citation 覆盖和现有证据契约的直接支持率。证据契约并非独立 LLM 裁判，因此生产变更前仍应抽样人工复核高风险结论。

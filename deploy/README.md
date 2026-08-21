@@ -63,6 +63,10 @@ deploy/appctl docker-down
 
 Compose 使用已通过 `npm --prefix admin run build` 生成的 `admin/dist` 构建 Python 镜像；运行时仍由 `deploy/.env.local` 注入品牌与服务配置。修改 Admin 源码后应先重新执行构建并提交对应产物。
 
+## 混合检索升级
+
+`QDRANT_COLLECTION` 默认使用 `knowledge_chunks_hybrid_v1`，其中同时保存 dense 与 `lexical` sparse vector。旧的单向量 collection 不能原地升级：保留旧 collection，将环境变量切换到新名称后，在 Admin 的“知识库文档”执行“重建全部索引”，待任务完成后再切换流量。不要删除旧 collection，直到抽样验证检索、引用和权限过滤。
+
 ## Kubernetes
 
 1. 编辑 `deploy/k8s/app.yaml` 中的 ConfigMap，配置外部 PostgreSQL、Qdrant、Redis、Kafka、S3 兼容存储、模型服务、OIDC 和品牌。

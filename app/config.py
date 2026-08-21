@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     database_url: str
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection: str = "knowledge_chunks"
+    qdrant_collection: str = "knowledge_chunks_hybrid_v1"
     redis_url: str = "redis://localhost:6379/0"
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_document_topic: str = "knowledge.documents"

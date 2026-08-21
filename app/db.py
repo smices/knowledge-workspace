@@ -210,6 +210,21 @@ class AnswerFeedback(Base):
     )
 
 
+class KnowledgeRelation(Base):
+    __tablename__ = "knowledge_relations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    document_version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(255), index=True)
+    target: Mapped[str] = mapped_column(String(255), index=True)
+    relation: Mapped[str] = mapped_column(String(128), index=True)
+    excerpt: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("document_version_id", "chunk_index", "source", "target", "relation",
+                                       name="uq_knowledge_relation_evidence"),)
+
+
 
 def init_db():
     # ponytail: create_all keeps local bootstrap runnable; production uses Alembic migrations.

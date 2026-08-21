@@ -5,7 +5,7 @@ metadata:
   namespace: knowledge-system
 data:
   QDRANT_URL: REPLACE_WITH_QDRANT_URL
-  QDRANT_COLLECTION: knowledge_chunks
+  QDRANT_COLLECTION: knowledge_chunks_hybrid_v1
   KAFKA_BOOTSTRAP_SERVERS: REPLACE_WITH_KAFKA_BOOTSTRAP_SERVERS
   KAFKA_DOCUMENT_TOPIC: knowledge.documents
   S3_ENDPOINT_URL: REPLACE_WITH_S3_ENDPOINT_URL
