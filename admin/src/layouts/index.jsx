@@ -3,14 +3,14 @@ import { ProLayout } from '@ant-design/pro-components';
 import { Avatar, Badge, Button, ConfigProvider, Dropdown, Tooltip, theme } from 'antd';
 import enUS from 'antd/locale/en_US';
 import zhCN from 'antd/locale/zh_CN';
-import { BellOutlined, BookOutlined, FileTextOutlined, GlobalOutlined, HistoryOutlined, MoonOutlined, SunOutlined, SyncOutlined, TeamOutlined, ShareAltOutlined } from '@ant-design/icons';
+import { BellOutlined, BookOutlined, FileTextOutlined, GlobalOutlined, HistoryOutlined, MoonOutlined, SunOutlined, SyncOutlined, TeamOutlined, ShareAltOutlined, TagsOutlined } from '@ant-design/icons';
 import { history, Outlet, useLocation } from '@umijs/max';
 import 'antd/dist/reset.css';
 import '../styles.css';
 
 const copy = {
-  zh: { overview: '总览', documents: '知识库文档', tasks: '任务进度', logs: '审计日志', members: '成员与权限', relations: '关系证据', language: 'English', logout: '退出登录', admin: '管理员' },
-  en: { overview: 'Overview', documents: 'Documents', tasks: 'Task progress', logs: 'Audit logs', members: 'Members & access', relations: 'Relation evidence', language: '中文', logout: 'Sign out', admin: 'Admin' },
+  zh: { overview: '总览', documents: '知识库文档', tasks: '任务进度', logs: '审计日志', members: '成员与权限', relations: '关系证据', aliases: '实体称谓', language: 'English', logout: '退出登录', admin: '管理员' },
+  en: { overview: 'Overview', documents: 'Documents', tasks: 'Task progress', logs: 'Audit logs', members: 'Members & access', relations: 'Relation evidence', aliases: 'Entity aliases', language: '中文', logout: 'Sign out', admin: 'Admin' },
 };
 const brand = window.__APP_BRAND__ || { name: 'Knowledge Workspace', mark: 'K', footer: 'Evidence first', primaryColor: '#4f5bd5', logoUrl: '' };
 
@@ -43,6 +43,7 @@ export default function Layout() {
     { path: '/tasks', name: t.tasks, icon: <SyncOutlined /> },
     { path: '/members', name: t.members, icon: <TeamOutlined /> },
     { path: '/relations', name: t.relations, icon: <ShareAltOutlined /> },
+    { path: '/entity-aliases', name: t.aliases, icon: <TagsOutlined /> },
     { path: '/logs', name: t.logs, icon: <HistoryOutlined /> },
   ];
   const pageName = routes.find((route) => route.path === pathname)?.name || t.overview;

@@ -225,6 +225,25 @@ class KnowledgeRelation(Base):
                                        name="uq_knowledge_relation_evidence"),)
 
 
+class EntityAlias(Base):
+    __tablename__ = "entity_aliases"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    document_version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
+    canonical: Mapped[str] = mapped_column(String(255), index=True)
+    alias: Mapped[str] = mapped_column(String(255), index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    excerpt: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="candidate", index=True)
+    source: Mapped[str] = mapped_column(String(16), default="pattern")
+    created_by: Mapped[str | None] = mapped_column(String(256))
+    approved_by: Mapped[str | None] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    __table_args__ = (UniqueConstraint("document_version_id", "canonical", "alias",
+                                       name="uq_entity_alias_version_mapping"),)
+
+
 
 def init_db():
     # ponytail: create_all keeps local bootstrap runnable; production uses Alembic migrations.

@@ -13,6 +13,7 @@ export default defineConfig({
     { path: '/tasks', component: '@/pages/tasks' },
     { path: '/members', component: '@/pages/members' },
     { path: '/relations', component: '@/pages/relations' },
+    { path: '/entity-aliases', component: '@/pages/entity-aliases' },
     { path: '/logs', component: '@/pages/logs' },
     { path: '*', redirect: '/' },
   ],

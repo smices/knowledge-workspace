@@ -9,7 +9,7 @@ from qdrant_client import models
 from sqlalchemy import select
 from app.cache import bump_knowledge_revision
 from app.config import settings
-from app.db import Chunk, Document, DocumentGrant, DocumentVersion, KnowledgeRelation, Role, SessionLocal
+from app.db import Chunk, Document, DocumentGrant, DocumentVersion, EntityAlias, KnowledgeRelation, Role, SessionLocal
 from app.storage import get_file
 from app.vector import client, ensure_collection, sparse_vector
 from worker.llm import embed
@@ -43,6 +43,22 @@ def chunks(segments: list[tuple[str, list[str], int | None]], size=900, overlap=
         result.extend((text[i:i + size], section_path, page)
                       for i in range(0, len(text), size - overlap) if text[i:i + size].strip())
     return result
+
+
+ALIAS_PATTERN = re.compile(
+    r"(?P<canonical>[A-Za-z][A-Za-z0-9_.-]{1,63}|[\u4e00-\u9fff]{2,8})\s*[（(]\s*"
+    r"(?:简称|又名|别名|以下简称)\s*(?P<alias>[A-Za-z][A-Za-z0-9_.-]{1,63}|[\u4e00-\u9fff]{2,8})\s*[）)]"
+)
+
+
+def alias_candidates(pieces: list[tuple[str, list[str], int | None]]):
+    seen = set()
+    for chunk_index, (content, _, _) in enumerate(pieces):
+        for match in ALIAS_PATTERN.finditer(content):
+            canonical, alias = match.group("canonical"), match.group("alias")
+            if canonical != alias and (canonical, alias) not in seen:
+                seen.add((canonical, alias))
+                yield chunk_index, canonical, alias, content[:600]
 
 async def run():
     ensure_collection()
@@ -82,10 +98,15 @@ async def run():
                     if doc.status not in {"canceled", "deleted"}:
                         db.query(Chunk).filter(Chunk.document_version_id == version.id).delete(synchronize_session=False)
                         db.query(KnowledgeRelation).filter(KnowledgeRelation.document_version_id == version.id).delete(synchronize_session=False)
+                        db.query(EntityAlias).filter(EntityAlias.document_version_id == version.id).delete(synchronize_session=False)
                         db.add_all([Chunk(id=str(uuid5(NAMESPACE_URL, f"{version.id}:{i}")), document_version_id=version.id,
                                           chunk_index=i, content=piece, content_hash=sha256(piece.encode()).hexdigest(),
                                           section_path=section_path, page=page)
                                     for i, (piece, section_path, page) in enumerate(pieces)])
+                        db.add_all([EntityAlias(tenant_id=doc.tenant_id, document_version_id=version.id,
+                                                chunk_index=index, canonical=canonical, alias=alias,
+                                                excerpt=excerpt, source="pattern", created_by=doc.created_by)
+                                    for index, canonical, alias, excerpt in alias_candidates(pieces)])
                         roles = [
                             name
                             for (name,) in db.query(Role.name)

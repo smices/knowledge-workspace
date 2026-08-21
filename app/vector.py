@@ -49,21 +49,38 @@ def ensure_collection():
 
 def _focus_parts(text: str) -> list[str]:
     focus = _strip_question(text)
-    return [part for block in re.findall(r"[\u4e00-\u9fff]+", focus) for part in re.split(r"[和與及跟、的]", block) if len(part) >= 2]
+    focus = re.sub(r"^(?:(?:分別|各自|請|归纳|歸納|列出|总结|總結|用不超過|每類|每个|每個|區分)\s*)+", "", focus)
+    focus = re.sub(r"(?:分別|各自)(?:起到了)?(?:什麼|什么).*$", "", focus)
+    parts = []
+    for block in re.findall(r"[\u4e00-\u9fff]+", focus):
+        if block.endswith(("中", "內")):
+            continue
+        for part in re.split(r"[和與及跟、的]", block):
+            part = re.sub(r"(?:在|於).*", "", part)
+            if len(part) >= 2 and not part.startswith(("主要", "人物", "角色", "作用", "原因", "动机", "動機", "结果", "結果", "关系", "關係", "什么", "什麼", "他")):
+                parts.append(part)
+    return list(dict.fromkeys(parts))
+
+
+def normalize_mention(text: str) -> str:
+    return _to_traditional(text).strip()
 
 
 def _strip_question(text: str) -> str:
-    return re.sub(r"(是什麼關係|(?:之間)?(?:的)?關係|是誰|為什麼|為何|如何|有哪些|多少|嗎|呢).*", "", _to_traditional(text))
+    return re.sub(r"(是什麼關係|(?:之間)?(?:的)?關係|是誰|[為爲]什麼|[為爲]何|如何|有哪些|多少|嗎|呢).*", "", _to_traditional(text))
 
 
 def _terms(text: str) -> set[str]:
-    focus = _strip_question(text)
+    focus = re.sub(r"(?:是什麼關係|關係|是誰|[為爲]什麼|[為爲]何|如何|有哪些|多少|嗎|呢)", "", _to_traditional(text))
+    focus = re.sub(r"^(?:(?:分別|各自|請|归纳|歸納|列出|总结|總結|用不超過|每類|每个|每個|區分)\s*)+", "", focus)
+    focus = re.sub(r"(?:分別|各自)(?:起到了)?(?:什麼|什么).*$", "", focus)
     terms = set(re.findall(r"[A-Za-z0-9_]{2,}", focus.lower()))
     for block in re.findall(r"[\u4e00-\u9fff]+", focus):
         for part in re.split(r"[和與及跟、的]", block):
-            if len(part) >= 2:
-                terms.add(part)
-                terms.update(part[i:i + 2] for i in range(len(part) - 1))
+            if len(part) < 2:
+                continue
+            terms.add(part)
+            terms.update(part[i:i + 2] for i in range(len(part) - 1))
     return terms
 
 
@@ -77,24 +94,49 @@ def sparse_vector(text: str) -> models.SparseVector:
 
 
 def _lexical_score(query: str, content: str) -> float:
-    terms = _terms(query)
+    focus = _focus_parts(query)
+    terms = {part if len(part) == 2 else part[i:i + 2]
+             for part in focus for i in range(max(1, len(part) - 1))} or _terms(query)
     if not terms:
         return 0.0
     haystack = _to_traditional(content).lower()
     return sum(term in haystack for term in terms) / len(terms)
 
 
-def _has_focus_parts(query: str, content: str) -> bool:
+def _alias_values(aliases, canonical: str, payload: dict | None = None) -> list[str]:
+    values = []
+    for item in (aliases or {}).get(canonical, []):
+        if isinstance(item, str):
+            values.append(item)
+        elif payload and str(item.get("document_id")) == str(payload.get("document_id")) and str(item.get("document_version")) == str(payload.get("document_version")):
+            values.append(item["alias"])
+    return values
+
+
+def _all_alias_values(aliases) -> list[str]:
+    return [item if isinstance(item, str) else item["alias"] for values in (aliases or {}).values() for item in values]
+
+
+def _has_focus_parts(query: str, content: str, aliases=None, payload: dict | None = None) -> bool:
     haystack = _to_traditional(content)
     parts = _focus_parts(query)
-    return len(parts) < 2 or all(part in haystack for part in parts)
+    matched = [any(normalize_mention(value) in haystack for value in [part, *_alias_values(aliases, part, payload)])
+               for part in parts]
+    if len(matched) < 2:
+        return True
+    if len(matched) == 2:
+        return all(matched)
+    # ponytail: multi-entity summaries use the first entity as anchor; add relation parsing if peer sets are needed.
+    return matched[0] and any(matched[1:])
 
 
-def _rank_points(points, query: str, limit: int):
+def _rank_points(points, query: str, limit: int, aliases=None):
     """Apply relevance and co-occurrence gates before returning evidence."""
+    expanded = " ".join(_all_alias_values(aliases))
     accepted = [point for point in points
-                if _lexical_score(query, (point.payload or {}).get("content", "")) >= MIN_LEXICAL_SCORE
-                and _has_focus_parts(query, (point.payload or {}).get("content", ""))]
+                if max(_lexical_score(query, (point.payload or {}).get("content", "")),
+                       _lexical_score(expanded, (point.payload or {}).get("content", ""))) >= MIN_LEXICAL_SCORE
+                and _has_focus_parts(query, (point.payload or {}).get("content", ""), aliases, point.payload or {})]
     return [SimpleNamespace(payload=point.payload, score=point.score) for point in accepted[:limit]]
 
 
@@ -112,27 +154,30 @@ def _prefetch(vector, query_text: str, filters: models.Filter, limit: int):
     ]
 
 
-def search(vector, tenant_id: str, roles: set[str], limit: int, query_text: str | None = None):
+def search(vector, tenant_id: str, roles: set[str], limit: int, query_text: str | None = None,
+           aliases=None):
     filters = _filter(tenant_id, roles)
     if not query_text:
         return client.query_points(collection_name=settings.qdrant_collection, query=vector,
                                    query_filter=filters, limit=limit, with_payload=True).points
+    expanded = " ".join(_all_alias_values(aliases))
     candidate_limit = min(max(limit * 6, 24), 120)
     points = client.query_points(collection_name=settings.qdrant_collection,
-        prefetch=_prefetch(vector, query_text, filters, candidate_limit),
+        prefetch=_prefetch(vector, f"{query_text} {expanded}", filters, candidate_limit),
         query=models.FusionQuery(fusion=models.Fusion.RRF), limit=candidate_limit, with_payload=True).points
-    return _rank_points(points, query_text, limit)
+    return _rank_points(points, query_text, limit, aliases)
 
 
 async def search_async(vector, tenant_id: str, roles: set[str], limit: int,
-                       query_text: str | None = None):
+                       query_text: str | None = None, aliases=None):
     """Cancellable, tenant- and role-filtered hybrid retrieval."""
     filters = _filter(tenant_id, roles)
     if not query_text:
         return (await async_client.query_points(collection_name=settings.qdrant_collection, query=vector,
                                                 query_filter=filters, limit=limit, with_payload=True)).points
+    expanded = " ".join(_all_alias_values(aliases))
     candidate_limit = min(max(limit * 6, 24), 120)
     points = (await async_client.query_points(collection_name=settings.qdrant_collection,
-        prefetch=_prefetch(vector, query_text, filters, candidate_limit),
+        prefetch=_prefetch(vector, f"{query_text} {expanded}", filters, candidate_limit),
         query=models.FusionQuery(fusion=models.Fusion.RRF), limit=candidate_limit, with_payload=True)).points
-    return _rank_points(points, query_text, limit)
+    return _rank_points(points, query_text, limit, aliases)
