@@ -61,6 +61,16 @@ class PrincipalRole(Base):
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"), primary_key=True)
 
 
+class LocalAdminCredential(Base):
+    """The single installation-created account; never an IdP profile."""
+    __tablename__ = "local_admin_credentials"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(ForeignKey("principals.id"), unique=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ProTable, StatisticCard } from '@ant-design/pro-components';
-import { Alert, Avatar, Badge, Button, Card, Descriptions, List, Modal, Popconfirm, Space, Spin, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Avatar, Badge, Button, Card, Descriptions, List, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography, Upload, message } from 'antd';
 import { DatabaseOutlined, FileSearchOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
 
 const api = async (url, options = {}) => {
@@ -125,4 +125,24 @@ function Logs() {
   return <ProTable rowKey="id" request={async () => ({ data: (await api('/api/v1/admin/logs')).items, success: true })} columns={columns} search={false} pagination={{ pageSize: 20 }} />;
 }
 
-export { Dashboard, Documents, Tasks, Logs };
+function Members() {
+  const t = useAdminLanguage();
+  const [data, setData] = useState({ items: [], roles: [] });
+  const [editing, setEditing] = useState(null);
+  const [roles, setRoles] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const load = async () => { setLoading(true); try { setData(await api('/api/v1/admin/members')); } catch (e) { message.error(e.message); } finally { setLoading(false); } };
+  useEffect(() => { load(); }, []);
+  const saveRoles = async () => { try { await api(`/api/v1/admin/members/${encodeURIComponent(editing.subject)}/roles`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles }) }); message.success(languageText(t, '权限已更新', 'Access updated')); setEditing(null); load(); } catch (e) { message.error(e.message); } };
+  const setStatus = async (row, status) => { try { await api(`/api/v1/admin/members/${encodeURIComponent(row.subject)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); message.success(languageText(t, '状态已更新', 'Status updated')); load(); } catch (e) { message.error(e.message); } };
+  const columns = [
+    { title: languageText(t, '账号标识', 'Subject'), dataIndex: 'subject', ellipsis: true },
+    { title: languageText(t, '来源', 'Source'), dataIndex: 'source', render: (_, row) => <Tag color={row.source === 'local' ? 'gold' : 'blue'}>{row.source === 'local' ? languageText(t, '初始化本地管理员', 'Initial local admin') : 'IdP'}</Tag> },
+    { title: languageText(t, '应用角色', 'App roles'), dataIndex: 'roles', render: (value) => value?.length ? value.map((role) => <Tag key={role}>{role}</Tag>) : '—' },
+    { title: languageText(t, '状态', 'Status'), dataIndex: 'status', render: (value) => <StatusTag value={value} t={t} /> },
+    { title: t.actions, render: (_, row) => row.initial_local_admin ? <Typography.Text type="secondary">{languageText(t, '系统账户', 'System account')}</Typography.Text> : <Space><Button type="link" onClick={() => { setEditing(row); setRoles(row.roles || []); }}>{languageText(t, '配置权限', 'Access')}</Button><Popconfirm title={row.status === 'active' ? languageText(t, '禁用后该账号将无法继续访问本应用，是否继续？', 'Disable this account from this application?') : languageText(t, '重新启用该账号？', 'Enable this account?')} onConfirm={() => setStatus(row, row.status === 'active' ? 'disabled' : 'active')}><Button type="link" danger={row.status === 'active'}>{row.status === 'active' ? languageText(t, '禁用', 'Disable') : languageText(t, '启用', 'Enable')}</Button></Popconfirm></Space> },
+  ];
+  return <Card title={languageText(t, '成员与权限', 'Members & access')}><Alert showIcon type="info" message={languageText(t, '仅管理 IdP 账号在本应用中的角色和访问状态；个人资料与密码始终在 IdP 管理。', 'Only application roles and access status are managed here. Profiles and passwords stay in the IdP.')} style={{ marginBottom: 16 }} /><Table rowKey="subject" loading={loading} dataSource={data.items} columns={columns} pagination={{ pageSize: 20 }} /><Modal title={languageText(t, '配置应用角色', 'Configure application roles')} open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveRoles} okText={languageText(t, '保存', 'Save')}><p>{editing?.subject}</p><Select mode="tags" style={{ width: '100%' }} value={roles} onChange={setRoles} options={(data.roles || []).map((role) => ({ value: role }))} tokenSeparators={[',']} placeholder={languageText(t, '输入或选择角色', 'Choose or enter roles')} /></Modal></Card>;
+}
+
+export { Dashboard, Documents, Tasks, Logs, Members };

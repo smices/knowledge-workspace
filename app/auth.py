@@ -31,6 +31,7 @@ class Principal:
     subject: str
     tenant_id: str
     roles: frozenset[str]
+    source: str = "idp"
 
 
 @dataclass(frozen=True)
@@ -96,11 +97,28 @@ def authorization_request(metadata: OIDCDiscovery | None = None) -> tuple[str, s
 def safe_next_path(value: str | None) -> str:
     """Keep post-login navigation on this application origin."""
     if not value:
-        return "/docs"
+        return "/home"
     parsed = urlparse(value)
     if parsed.scheme or parsed.netloc or not value.startswith("/") or value.startswith("//"):
-        return "/docs"
+        return "/home"
     return value
+
+
+def browser_session_active(request: Request) -> bool:
+    """Return whether this browser has a valid application session cookie."""
+    value = request.cookies.get(settings.identity_session_cookie)
+    if not value:
+        return False
+    if settings.auth_mode.lower() == "dev":
+        # ponytail: development-only marker; production always verifies a signed OIDC session.
+        return hmac.compare_digest(value, "dev")
+    if settings.auth_mode.lower() != "oidc":
+        return False
+    try:
+        _verify_session(value)
+    except HTTPException:
+        return False
+    return True
 
 
 def _principal_from_claims(claims: dict[str, Any]) -> Principal:
@@ -120,6 +138,7 @@ def _sign_session(principal: Principal, now: int | None = None) -> str:
         "sub": principal.subject,
         "tenant_id": principal.tenant_id,
         "roles": sorted(principal.roles),
+        "source": principal.source,
         "iat": issued,
         "exp": issued + settings.identity_session_max_seconds,
     }
@@ -141,6 +160,7 @@ def _verify_session(value: str) -> Principal:
             subject=str(payload["sub"]),
             tenant_id=str(payload["tenant_id"]),
             roles=frozenset(str(role) for role in payload.get("roles", [])),
+            source=str(payload.get("source", "idp")),
         )
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise HTTPException(401, "Invalid session") from exc
@@ -173,9 +193,19 @@ def principal_from_session(
         # IdP identity is authentication only. Resolve business roles from the
         # application's own database so an IdP claim can never elevate access.
         try:
-            from app.db import PrincipalRole, Role, SessionLocal
+            from app.db import Principal as DbPrincipal, PrincipalRole, Role, SessionLocal, Tenant
 
             with SessionLocal() as db:
+                identity = db.get(DbPrincipal, principal.subject)
+                if identity is None:
+                    if db.get(Tenant, principal.tenant_id) is None:
+                        db.add(Tenant(id=principal.tenant_id, name=principal.tenant_id))
+                    db.add(DbPrincipal(id=principal.subject, tenant_id=principal.tenant_id,
+                                       display_name=None, principal_type="idp"))
+                    db.commit()
+                elif (identity.tenant_id != principal.tenant_id or identity.status != "active"
+                      or (identity.principal_type == "local_admin") != (principal.source == "local")):
+                    raise HTTPException(403, "Application access is disabled")
                 role_names = db.scalars(
                     select(Role.name)
                     .join(PrincipalRole, PrincipalRole.role_id == Role.id)
@@ -185,6 +215,8 @@ def principal_from_session(
                     )
                 ).all()
             return Principal(principal.subject, principal.tenant_id, frozenset(role_names))
+        except HTTPException:
+            raise
         except Exception as exc:
             # A database failure must not turn into an unauthenticated request.
             raise HTTPException(503, "Application authorization unavailable") from exc
@@ -271,6 +303,7 @@ __all__ = [
     "OIDCDiscovery",
     "Principal",
     "authorization_request",
+    "browser_session_active",
     "discover",
     "exchange_code",
     "identity_account_url",

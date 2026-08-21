@@ -5,14 +5,15 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f7f8fb">
   <title>Knowledge Workspace</title>
-  <link rel="stylesheet" href="/ui/styles.css?v=20260820-conversation">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260820-home">
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/ui/"><span class="mark" id="brand-mark">K</span><span class="brand-copy"><b id="brand-name">Knowledge Workspace</b><small id="brand-tagline">企业知识助手</small></span></a>
-      <nav aria-label="主导航"><a class="active" href="#answer">问答</a><a href="/admin/">管理后台</a></nav>
-      <div class="topbar-actions"><button class="icon-button" id="theme-toggle" type="button" aria-label="切换主题">◐</button><a class="login-link" href="/auth/login">登录</a></div>
+      <a class="brand" href="/home"><span class="mark" id="brand-mark">K</span><span class="brand-copy"><b id="brand-name">Knowledge Workspace</b><small id="brand-tagline">企业知识助手</small></span></a>
+      <nav aria-label="主导航"><a class="active" href="#answer">问答</a></nav>
+      <span class="status-chip topbar-status"><i></i>已连接知识库</span>
+      <div class="topbar-actions"><button class="icon-button" id="theme-toggle" type="button" aria-label="切换主题">◐</button><a class="login-link" href="/auth/logout">退出登录</a></div>
     </div>
   </header>
 
@@ -24,7 +25,7 @@
     </section>
 
     <section id="answer" class="query-card">
-      <div class="query-card-head"><div><p class="eyebrow">问答工作区</p><h2>你想查什么？</h2></div><span class="status-chip"><i></i>已连接知识库</span></div>
+      <div class="query-card-head"><div><p class="eyebrow">问答工作区</p><h2>你想查什么？</h2></div></div>
       <form id="answer-form" class="search-row">
         <label class="sr-only" for="answer-query">问题</label>
         <div class="search-input-wrap"><span class="search-icon" aria-hidden="true">⌕</span><input id="answer-query" required autocomplete="off" placeholder="例如：公司的差旅报销标准是什么？"><kbd>⌘ K</kbd></div>
@@ -52,6 +53,6 @@
   </main>
   <footer><b id="brand-footer-name">Knowledge Workspace</b> <span>·</span> <span id="brand-footer-copy">Evidence first</span></footer>
   <script src="/brand.js"></script>
-  <script src="/ui/app.js?v=20260820-conversation"></script>
+  <script src="/assets/app.js?v=20260820-home"></script>
 </body>
 </html>

@@ -59,8 +59,8 @@ def test_oidc_claim_requires_tenant_context(monkeypatch):
 
 def test_next_path_rejects_external_redirects():
     assert safe_next_path("/documents") == "/documents"
-    assert safe_next_path("https://evil.example/") == "/docs"
-    assert safe_next_path("//evil.example/") == "/docs"
+    assert safe_next_path("https://evil.example/") == "/home"
+    assert safe_next_path("//evil.example/") == "/home"
 
 
 def test_logout_uses_discovered_end_session_endpoint(monkeypatch):
@@ -71,20 +71,21 @@ def test_logout_uses_discovered_end_session_endpoint(monkeypatch):
         end_session_endpoint="https://idp.example.test/logout",
     )
     monkeypatch.setattr("app.auth.discover", lambda: metadata)
-    monkeypatch.setattr(settings, "identity_post_logout_redirect_uri", "https://app.example.test/ui/")
+    monkeypatch.setattr(settings, "identity_post_logout_redirect_uri", "https://app.example.test/")
     url = identity_logout_url()
     assert url.startswith("https://idp.example.test/logout?")
     assert "client_id=sn-knowledge" in url
-    assert "post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2Fui%2F" in url
+    assert "post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2F" in url
 
 
 def test_logout_clears_local_session_when_provider_is_unavailable(monkeypatch):
     from app import main
 
+    monkeypatch.setattr(settings, "auth_mode", "oidc")
     monkeypatch.setattr(main, "identity_logout_url", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
     response = TestClient(app).get("/auth/logout", follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == "/ui/"
+    assert response.headers["location"] == "/login"
     assert settings.identity_session_cookie in response.headers.get("set-cookie", "")
 
 
@@ -96,6 +97,7 @@ def test_login_sets_one_time_oidc_cookies(monkeypatch):
         token_endpoint="https://idp.example.test/token",
         jwks_uri="https://idp.example.test/jwks",
     )
+    monkeypatch.setattr(settings, "auth_mode", "oidc")
     monkeypatch.setattr(main, "authorization_request", lambda: authorization_request(metadata))
     client = TestClient(app)
     response = client.get("/auth/login?next=/documents", follow_redirects=False)

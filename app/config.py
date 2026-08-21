@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     identity_cookie_secure: bool = False
     identity_session_max_seconds: int = 28800
     identity_http_timeout_seconds: float = 8.0
+    local_admin_username: str | None = None
+    local_admin_password: str | None = None
     brand_name: str = Field(default="Knowledge Workspace", min_length=1, max_length=80)
     brand_mark: str = Field(default="K", min_length=1, max_length=4)
     brand_tagline: str = Field(default="企业知识助手", max_length=120)
