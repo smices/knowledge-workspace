@@ -165,6 +165,7 @@ Kafka key 使用 `tenant_id:document_id`，保证同一文档事件有序。Cons
 - L0 合并同一进程内并发的完全相同问答；最后一个等待者取消时，中断底层检索与生成。
 - L1 复用规范化后完全相同的问题，缓存键包含租户、角色、知识版本、模型、Prompt/检索契约版本和生成参数；改变检索或答案证据契约时提升该版本，避免复用旧语义答案。
 - L2 仅在问题实体集合、检索证据集合一致且当前嵌入模型的向量相似度不低于 0.70 时复用；只缓存状态为“已回答”且每条结论均被证据直接支持的答案。
+- 对关系型问答和图谱边，被问实体对必须在同一原文分句共同出现；父子、共同认识或同一事件等跨分句线索不得作为该实体对的直接关系。无法满足时标记 `indirect` 或 `insufficient`，且不得持久化边。
 - 文档成功完成索引或删除时提升租户知识版本；旧版本缓存不再命中，无需全量扫描删除。
 - 幂等短锁和租约。
 - 限流和热点查询缓存。
@@ -232,7 +233,7 @@ Point ID 使用 `document_version_id:chunk_id`，禁止只使用 `document_id:ch
   "liked": false,
   "feedback_token": "user-scoped-signature",
   "evidence_contract": [
-    {"claim": "...", "evidence": [1], "support": "supported", "confidence": 0.92}
+    {"claim": "...", "evidence": [1], "support": "supported|indirect|insufficient", "confidence": 0.92}
   ],
   "entity_bindings": [
     {"entity": "标准名", "matched_mention": "原文称谓", "alias_id": "uuid", "status": "approved", "confidence": 0.92, "evidence": [1]}
@@ -334,6 +335,7 @@ GET    /health
 6. Kafka、worker、Qdrant、MinIO 任一短暂不可用时不会静默丢资料。
 7. 返回答案的每个关键依据都能定位到 citation。
 8. 已批准别名只命中所属版本；候选或拒绝别名不得影响检索、问答或关系图谱。
+9. 关系结论或图谱边不能仅因 chunk 内实体同现和引用存在而标记已支持；被问实体对不在同一原文分句时必须拒绝该结论或边。
 
 ## 11. 已确认的项目决策
 

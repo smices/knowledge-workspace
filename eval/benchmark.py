@@ -26,6 +26,13 @@ def ranking_metrics(results, expected_titles):
     rank = ranks[0]
     return {'hit': True, 'mrr': 1 / rank, 'ndcg': 1 / __import__('math').log2(rank + 1)}
 
+def answer_quality(expected_state, actual_state, contract):
+    if not expected_state:
+        return None
+    if actual_state != expected_state:
+        return False
+    return bool(contract) and all(item.get('support') == 'insufficient' for item in contract) if expected_state == 'no_answer' else True
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--base-url', default='http://127.0.0.1:18024')
@@ -44,8 +51,13 @@ def main():
         citations = data.get('citations', [])
         contract = data.get('evidence_contract', [])
         claims = [entry for entry in contract if entry.get('claim')]
-        support_rate = sum(entry.get('support') == 'supported' for entry in claims) / len(claims) if claims else 0.0
-        answers.append({**item, 'status': status, 'ms': round(ms, 1), 'error': error, 'hit': any(c.get('title') in item['expected_titles'] for c in citations), 'keywords': [k for k in item['expected_keywords'] if k in text], 'citation_count': len(citations), 'contract_support_rate': support_rate, 'answer_state': data.get('answer_state'), 'answer': text})
+        expected_state = item.get('expected_answer_state')
+        quality = answer_quality(expected_state, data.get('answer_state'), claims)
+        support_rate = (1.0 if quality else 0.0) if quality is not None else (sum(entry.get('support') == 'supported' for entry in claims) / len(claims) if claims else 0.0)
+        answers.append({**item, 'status': status, 'ms': round(ms, 1), 'error': error,
+                        'hit': quality if quality is not None else any(c.get('title') in item['expected_titles'] for c in citations),
+                        'keywords': [k for k in item['expected_keywords'] if k in text], 'citation_count': len(citations),
+                        'contract_support_rate': support_rate, 'answer_state': data.get('answer_state'), 'answer': text})
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [pool.submit(call, args.base_url, '/api/v1/retrieval/search', {'query': q['question'], 'limit': 8}) for q in questions]
         concurrent_results = [f.result() for f in as_completed(futures)]

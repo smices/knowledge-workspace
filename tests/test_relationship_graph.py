@@ -1,5 +1,5 @@
-from app.main import (answer_state, evidence_contract, graph_is_available,
-                      merge_relationships, parse_relationships)
+from app.main import (answer_state, direct_only_answer, evidence_contract, graph_is_available,
+                      merge_relationships, parse_relationships, direct_pair_support)
 
 
 def test_graph_is_hidden_when_answer_lacks_confirmed_evidence():
@@ -56,3 +56,27 @@ def test_answer_contract_distinguishes_states():
     assert answer_state("## 结论\n资料不足\n## 依据\n[证据 1]", contexts) == "no_answer"
     assert answer_state("## 结论\n部分可确认，但资料不足\n## 依据\n[证据 1]", contexts) == "partial"
     assert answer_state("## 结论\n证据冲突，无法确认\n## 依据\n[证据 1]", contexts) == "conflict"
+
+
+def test_direct_pair_gate_rejects_indirect_derivation():
+    contexts = [{"content": "红孩儿是牛魔王之子；牛魔王与孙悟空曾结为七兄弟。"}]
+    answer = "## 结论\n孙悟空和红孩儿是结义兄弟关系 [证据 1]\n\n## 依据\n[证据 1]"
+    support = ["indirect"]
+    contract = evidence_contract(answer, contexts, "answered", support)
+    filtered, state = direct_only_answer(contract)
+    assert contract[0]["support"] == "indirect"
+    assert state == "no_answer"
+    assert "孙悟空和红孩儿是结义兄弟" not in filtered
+    assert direct_pair_support("孙悟空和红孩儿是什么关系？", ["孙悟空和红孩儿是结义兄弟关系 [证据 1]"], contexts, []) == [False]
+
+
+def test_direct_pair_gate_keeps_direct_claims_when_one_is_indirect():
+    contexts = [{"content": "刘备请诸葛亮出山辅佐。"}]
+    answer = "## 结论\n刘备与诸葛亮是主从关系 [证据 1]\n孙悟空与红孩儿是结义兄弟关系 [证据 1]\n\n## 依据\n[证据 1]"
+    contract = evidence_contract(answer, contexts, "answered", [None, "indirect"])
+    filtered, state = direct_only_answer(contract)
+    assert state == "partial"
+    assert "刘备与诸葛亮" in filtered
+    assert "孙悟空与红孩儿" not in filtered
+    assert direct_pair_support("刘备和诸葛亮是什么关系？", ["刘备与诸葛亮是主从关系 [证据 1]"], contexts, []) == [True]
+    assert direct_pair_support("孙悟空的师父是谁？", ["孙悟空的师父是唐僧 [证据 1]"], contexts, []) == [None]
