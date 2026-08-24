@@ -74,7 +74,7 @@ from app.vector import (_focus_parts, async_client as async_vector_client, clien
 
 llm = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
 async_llm = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
-CACHE_CONTRACT_VERSION = "entity-alias-v1"
+CACHE_CONTRACT_VERSION = "direct-evidence-v5"
 
 
 @asynccontextmanager
@@ -263,6 +263,41 @@ def _conclusion_text(answer: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _conclusion_claims(answer: str) -> list[str]:
+    conclusion = _conclusion_text(answer)
+    claims = [re.sub(r"^[-*•]\s*", "", line).strip() for line in conclusion.splitlines() if line.strip()]
+    return claims or ([conclusion] if conclusion else [])
+
+
+def direct_pair_support(query: str, claims: list[str], contexts: list[dict], records: list[dict]) -> list[bool | None]:
+    """Require queried relationship pairs to co-occur in one source clause."""
+    entities = [entity for entity in _focus_parts(query)
+                if entity not in {"師父", "徒弟", "主公", "盟友", "對手", "關係", "人物", "團隊"}]
+    result = []
+    for claim in claims:
+        named = [entity for entity in entities if normalize_mention(entity) in normalize_mention(claim)]
+        if len(named) < 2:
+            result.append(None)
+            continue
+        supported = False
+        evidence_ids = _evidence_ids(claim, len(contexts)) or list(range(1, len(contexts) + 1))
+        for index in evidence_ids:
+            context = contexts[index - 1]
+            clauses = re.split(r"[。！？；;，,：:]", normalize_mention(str(context.get("content", ""))))
+            mentions = []
+            for entity in named:
+                values = [normalize_mention(entity)] + [record["alias"] for record in records
+                          if record["canonical"] == normalize_mention(entity)
+                          and str(record["document_id"]) == str(context.get("document_id"))
+                          and str(record["document_version"]) == str(context.get("document_version"))]
+                mentions.append(values)
+            if any(all(any(value in clause for value in values) for values in mentions) for clause in clauses):
+                supported = True
+                break
+        result.append(supported)
+    return result
+
+
 def answer_state(answer: str, contexts: list[dict]) -> str:
     """Classify answer completeness without treating retrieval alone as proof."""
     if not contexts:
@@ -277,18 +312,21 @@ def answer_state(answer: str, contexts: list[dict]) -> str:
     return "answered" if _evidence_ids(answer, len(contexts)) else "no_answer"
 
 
-def evidence_contract(answer: str, contexts: list[dict], state: str | None = None) -> list[dict]:
+def evidence_contract(answer: str, contexts: list[dict], state: str | None = None,
+                      relationship_support: list[str | None] | None = None) -> list[dict]:
     state = state or answer_state(answer, contexts)
-    conclusion = _conclusion_text(answer)
-    claims = [re.sub(r"^[-*•]\s*", "", line).strip() for line in conclusion.splitlines() if line.strip()]
-    if not claims and conclusion:
-        claims = [conclusion]
+    claims = _conclusion_claims(answer)
     all_ids = _evidence_ids(answer, len(contexts))
     result = []
-    for claim in claims:
+    for index, claim in enumerate(claims):
         direct_ids = _evidence_ids(claim, len(contexts))
         ids = direct_ids or all_ids
-        if state == "conflict":
+        verified = relationship_support[index] if relationship_support and index < len(relationship_support) else None
+        if verified == "indirect":
+            support, confidence = "indirect", 0.1
+        elif verified == "insufficient":
+            support, confidence = "insufficient", 0.15
+        elif state == "conflict":
             support, confidence = "conflict", 0.25
         elif not ids or state == "no_answer":
             support, confidence = "insufficient", 0.15
@@ -300,6 +338,15 @@ def evidence_contract(answer: str, contexts: list[dict], state: str | None = Non
             support, confidence = "cited", 0.6
         result.append({"claim": claim, "evidence": ids, "support": support, "confidence": confidence})
     return result
+
+
+def direct_only_answer(contract: list[dict]) -> tuple[str, str]:
+    direct = [item for item in contract if item["support"] == "supported"]
+    if not direct:
+        return "## 结论\n资料不足：原文未直接说明所问实体之间的关系。\n\n## 归纳\n不能以间接线索推导关系。\n\n## 依据", "no_answer"
+    conclusion = "\n".join(f"- {item['claim']}" for item in direct)
+    evidence = "\n".join(f"[证据 {index}]" for item in direct for index in item["evidence"])
+    return f"## 结论\n{conclusion}\n\n## 归纳\n仅保留原文直接支持的关系；其余关系资料不足。\n\n## 依据\n{evidence}", "partial"
 
 
 def graph_is_available(answer: str, contexts: list[dict]) -> bool:
@@ -867,7 +914,14 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
         )
     citations = citations_for(points, contexts)
     state = answer_state(answer_text, contexts)
-    contract = evidence_contract(answer_text, contexts, state)
+    claims = _conclusion_claims(answer_text)
+    pair_support = direct_pair_support(body.query, claims, contexts, records)
+    relationship_support = ["indirect" if pair is False else None for pair in pair_support]
+    contract = evidence_contract(answer_text, contexts, state, relationship_support)
+    if any(support == "indirect" for support in relationship_support):
+        direct_contract = [item for item in contract if item["support"] == "supported"]
+        answer_text, state = direct_only_answer(contract)
+        contract = direct_contract or evidence_contract(answer_text, contexts, state)
     result = _answer_result(answer_text, state, citations, contract, revision, alias_bindings(contexts, records))
     cache_put(exact_key, result, 21600 if state == "answered" else 300)
     if state == "answered" and contract and all(
@@ -928,6 +982,9 @@ async def _graph(body: GraphRequest, p: Principal):
         ],
     )
     extracted = parse_relationships(completion.choices[0].message.content or "", contexts, body.query, aliases)
+    statements = [f"{edge['source']} | {edge['label']} | {edge['target']}" for edge in extracted]
+    pairs = direct_pair_support(body.query, statements, contexts, records)
+    extracted = [edge for edge, pair in zip(extracted, pairs) if pair is not False]
     persist_relationships(p, contexts, extracted)
     edges = merge_relationships(extracted)
     names = []

@@ -3,8 +3,8 @@
   "question_count": 16,
   "retrieval": {
     "success_rate": 1.0,
-    "p50_ms": 854.2,
-    "p95_ms": 1320.1,
+    "p50_ms": 490.1,
+    "p95_ms": 1311.1,
     "hit_rate": 1.0,
     "mrr": 0.96875,
     "ndcg": 0.9769331095982161,
@@ -23,7 +23,7 @@
           "谋士"
         ],
         "status": 200,
-        "ms": 573.7,
+        "ms": 151.9,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -46,7 +46,7 @@
           "司马懿"
         ],
         "status": 200,
-        "ms": 880.1,
+        "ms": 125.1,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -69,7 +69,7 @@
           "诸葛亮"
         ],
         "status": 200,
-        "ms": 854.2,
+        "ms": 110.3,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -91,7 +91,7 @@
           "义"
         ],
         "status": 200,
-        "ms": 1120.6,
+        "ms": 96.8,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -113,7 +113,7 @@
           "师父"
         ],
         "status": 200,
-        "ms": 1046.3,
+        "ms": 296.6,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -130,13 +130,10 @@
         "expected_titles": [
           "西游记.txt"
         ],
-        "expected_keywords": [
-          "妖怪",
-          "唐僧",
-          "敌"
-        ],
+        "expected_keywords": [],
+        "expected_answer_state": "no_answer",
         "status": 200,
-        "ms": 774.6,
+        "ms": 214.3,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -158,7 +155,7 @@
           "玉帝"
         ],
         "status": 200,
-        "ms": 757.2,
+        "ms": 432.2,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -181,7 +178,7 @@
           "沙僧"
         ],
         "status": 200,
-        "ms": 837.8,
+        "ms": 490.1,
         "error": null,
         "hit": true,
         "mrr": 0.5,
@@ -205,7 +202,7 @@
           "发配"
         ],
         "status": 200,
-        "ms": 1390.3,
+        "ms": 503.0,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -228,7 +225,7 @@
           "梁山"
         ],
         "status": 200,
-        "ms": 993.7,
+        "ms": 1037.3,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -250,7 +247,7 @@
           "鲁智深"
         ],
         "status": 200,
-        "ms": 653.0,
+        "ms": 841.7,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -272,7 +269,7 @@
           "朝廷"
         ],
         "status": 200,
-        "ms": 835.8,
+        "ms": 709.0,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -294,7 +291,7 @@
           "林黛玉"
         ],
         "status": 200,
-        "ms": 1320.1,
+        "ms": 1311.1,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -311,12 +308,10 @@
         "expected_titles": [
           "红楼梦.txt"
         ],
-        "expected_keywords": [
-          "贾宝玉",
-          "薛宝钗"
-        ],
+        "expected_keywords": [],
+        "expected_answer_state": "no_answer",
         "status": 200,
-        "ms": 1047.9,
+        "ms": 1132.8,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -338,7 +333,7 @@
           "贾母"
         ],
         "status": 200,
-        "ms": 842.8,
+        "ms": 917.1,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -355,14 +350,10 @@
         "expected_titles": [
           "红楼梦.txt"
         ],
-        "expected_keywords": [
-          "贾母",
-          "王夫人",
-          "林黛玉",
-          "薛宝钗"
-        ],
+        "expected_keywords": [],
+        "expected_answer_state": "no_answer",
         "status": 200,
-        "ms": 1068.0,
+        "ms": 2658.8,
         "error": null,
         "hit": true,
         "mrr": 1.0,
@@ -376,11 +367,11 @@
   },
   "answer": {
     "success_rate": 1.0,
-    "p50_ms": 22929.7,
-    "p95_ms": 72617.4,
+    "p50_ms": 23068.5,
+    "p95_ms": 83353.2,
     "hit_rate": 1.0,
     "citation_rate": 1.0,
-    "keyword_rate": 0.9375,
+    "keyword_rate": 0.8125,
     "contract_support_rate": 1.0,
     "items": [
       {
@@ -397,7 +388,7 @@
           "谋士"
         ],
         "status": 200,
-        "ms": 22838.1,
+        "ms": 7805.4,
         "error": null,
         "hit": true,
         "keywords": [
@@ -423,7 +414,7 @@
           "司马懿"
         ],
         "status": 200,
-        "ms": 38867.9,
+        "ms": 14019.7,
         "error": null,
         "hit": true,
         "keywords": [
@@ -448,7 +439,7 @@
           "诸葛亮"
         ],
         "status": 200,
-        "ms": 51176.2,
+        "ms": 20590.0,
         "error": null,
         "hit": true,
         "keywords": [
@@ -473,7 +464,7 @@
           "义"
         ],
         "status": 200,
-        "ms": 15916.2,
+        "ms": 10264.7,
         "error": null,
         "hit": true,
         "keywords": [
@@ -497,7 +488,7 @@
           "师父"
         ],
         "status": 200,
-        "ms": 22929.7,
+        "ms": 7.1,
         "error": null,
         "hit": true,
         "keywords": [
@@ -516,20 +507,17 @@
         "expected_titles": [
           "西游记.txt"
         ],
-        "expected_keywords": [
-          "妖怪",
-          "唐僧",
-          "敌"
-        ],
+        "expected_keywords": [],
+        "expected_answer_state": "no_answer",
         "status": 200,
-        "ms": 22627.9,
+        "ms": 14906.7,
         "error": null,
         "hit": true,
         "keywords": [],
         "citation_count": 3,
         "contract_support_rate": 1.0,
-        "answer_state": "answered",
-        "answer": "## 结论  \n孙悟空和红孩儿是结义兄弟关系 [证据 2]。  \n\n## 归纳  \n孙悟空与红孩儿是结义兄弟，红孩儿是牛魔王之子，而牛魔王与孙悟空曾结为七兄弟。  \n\n## 依据  \n[证据 2] 提到孙悟空与牛魔王结为七兄弟，红孩儿是牛魔王之子，因此红孩儿与孙悟空是结义兄弟关系。"
+        "answer_state": "no_answer",
+        "answer": "## 结论\n资料不足：原文未直接说明所问实体之间的关系。\n\n## 归纳\n不能以间接线索推导关系。\n\n## 依据"
       },
       {
         "id": "xy-03",
@@ -543,7 +531,7 @@
           "玉帝"
         ],
         "status": 200,
-        "ms": 72617.4,
+        "ms": 23068.5,
         "error": null,
         "hit": true,
         "keywords": [
@@ -552,7 +540,7 @@
         "citation_count": 3,
         "contract_support_rate": 1.0,
         "answer_state": "answered",
-        "answer": "## 结论  \n孙悟空大闹天宫的主要原因是因不满天庭的轻视和不公待遇，以及渴望获得更高的地位和权力 [证据 3]。  \n\n## 归纳  \n孙悟空大闹天宫的根本原因是其自尊心受挫，认为天庭没有给予他应有的尊重和地位，从而引发了反抗行为。  \n\n## 依据  \n[证据 3] 中提到孙悟空曾大闹天宫，使一条金箍棒，十萬天兵，無一個對手，只鬧得太上老君害怕，玉皇大帝心驚，表明他因不满天庭的轻视而反抗。"
+        "answer": "## 结论  \n孙悟空大闹天宫的主要原因是因不满天庭的轻视和不公待遇，以及渴望获得更高的地位和权力 [证据 2]。  \n\n## 归纳  \n孙悟空大闹天宫的根本原因是其自尊心受挫，认为天庭没有给予他应有的尊重和地位，从而引发了反抗行为。  \n\n## 依据  \n[证据 2] 中提到孙悟空曾因大闹天宫而被天庭所知，且其行为被描述为“曾大鬧天宮，使一條金箍棒，十萬天兵，無一個對手”，表明其因不满天庭的轻视而反抗。"
       },
       {
         "id": "xy-04",
@@ -567,7 +555,7 @@
           "沙僧"
         ],
         "status": 200,
-        "ms": 54484.6,
+        "ms": 45092.7,
         "error": null,
         "hit": true,
         "keywords": [
@@ -593,7 +581,7 @@
           "发配"
         ],
         "status": 200,
-        "ms": 78782.7,
+        "ms": 83353.2,
         "error": null,
         "hit": true,
         "keywords": [
@@ -619,7 +607,7 @@
           "梁山"
         ],
         "status": 200,
-        "ms": 63946.7,
+        "ms": 90301.9,
         "error": null,
         "hit": true,
         "keywords": [
@@ -630,7 +618,7 @@
         "citation_count": 3,
         "contract_support_rate": 1.0,
         "answer_state": "answered",
-        "answer": "## 结论  \n宋江在梁山的主要角色是梁山泊的首领，他与晁盖是结义兄弟关系 [证据 1]。  \n\n## 归纳  \n宋江在梁山泊中担任领导角色，是梁山泊的首领。他与晁盖之间是结义兄弟关系，晁盖曾是梁山泊的初代首领，宋江继任后成为新的首领。  \n\n## 依据  \n宋江在梁山泊中被推举为领导，负责指挥和决策，如在攻打东平府时担任主将 [证据 3]。宋江与晁盖在江州事件中相识，并结为兄弟 [证据 1]。"
+        "answer": "## 结论  \n宋江在梁山的主要角色是梁山泊的首领 [证据 2]；他与晁盖是结义兄弟关系 [证据 1]。  \n\n## 归纳  \n宋江在梁山泊中担任领导职务，并且与晁盖有深厚的兄弟情谊。  \n\n## 依据  \n宋江在梁山泊中被推举为领导，负责指挥军事行动 [证据 2]；宋江与晁盖在黄门山相遇，并且有对话，显示出他们之间的兄弟关系 [证据 1]。"
       },
       {
         "id": "sh-03",
@@ -644,7 +632,7 @@
           "鲁智深"
         ],
         "status": 200,
-        "ms": 19634.5,
+        "ms": 37146.1,
         "error": null,
         "hit": true,
         "keywords": [
@@ -653,8 +641,8 @@
         ],
         "citation_count": 3,
         "contract_support_rate": 1.0,
-        "answer_state": "answered",
-        "answer": "## 结论  \n鲁智深和林冲是结义兄弟关系 [证据 2]。  \n鲁智深和林冲是同路同行的关系 [证据 3]。  \n\n## 归纳  \n鲁智深和林冲在被追杀途中相遇，鲁智深救了林冲，并一路护送他前往沧州，二人因此结为兄弟。  \n\n## 依据  \n鲁智深救林冲并护送他前往沧州，二人因此结为兄弟 [证据 2]。  \n鲁智深一路护送林冲前往沧州，二人同路同行 [证据 3]。"
+        "answer_state": "partial",
+        "answer": "## 结论\n- 鲁智深和林冲是同路同行的关系 [证据 3]。\n\n## 归纳\n仅保留原文直接支持的关系；其余关系资料不足。\n\n## 依据\n[证据 3]"
       },
       {
         "id": "sh-04",
@@ -668,7 +656,7 @@
           "朝廷"
         ],
         "status": 200,
-        "ms": 24840.4,
+        "ms": 47739.3,
         "error": null,
         "hit": true,
         "keywords": [
@@ -692,7 +680,7 @@
           "林黛玉"
         ],
         "status": 200,
-        "ms": 16616.6,
+        "ms": 25795.8,
         "error": null,
         "hit": true,
         "keywords": [
@@ -711,22 +699,17 @@
         "expected_titles": [
           "红楼梦.txt"
         ],
-        "expected_keywords": [
-          "贾宝玉",
-          "薛宝钗"
-        ],
+        "expected_keywords": [],
+        "expected_answer_state": "no_answer",
         "status": 200,
-        "ms": 21812.1,
+        "ms": 33565.3,
         "error": null,
         "hit": true,
-        "keywords": [
-          "贾宝玉",
-          "薛宝钗"
-        ],
+        "keywords": [],
         "citation_count": 3,
         "contract_support_rate": 1.0,
-        "answer_state": "answered",
-        "answer": "## 结论  \n贾宝玉和薛宝钗是夫妻关系 [证据 2]。  \n\n## 归纳  \n贾宝玉与薛宝钗在贾母的安排下圆房，成为夫妻。薛宝钗对贾宝玉有劝导和照顾的作用，贾宝玉也对薛宝钗有依赖和亲近的表现。  \n\n## 依据  \n贾母提议让薛宝钗与贾宝玉圆房，并说明薛宝钗的性情适合与贾宝玉相处 [证据 1]。贾宝玉与薛宝钗圆房后，薛宝钗对贾宝玉有劝导作用，贾宝玉也对薛宝钗有亲近的表现 [证据 2]。"
+        "answer_state": "no_answer",
+        "answer": "## 结论\n资料不足：原文未直接说明所问实体之间的关系。\n\n## 归纳\n不能以间接线索推导关系。\n\n## 依据"
       },
       {
         "id": "hl-03",
@@ -740,7 +723,7 @@
           "贾母"
         ],
         "status": 200,
-        "ms": 16826.6,
+        "ms": 22330.7,
         "error": null,
         "hit": true,
         "keywords": [
@@ -759,32 +742,23 @@
         "expected_titles": [
           "红楼梦.txt"
         ],
-        "expected_keywords": [
-          "贾母",
-          "王夫人",
-          "林黛玉",
-          "薛宝钗"
-        ],
+        "expected_keywords": [],
+        "expected_answer_state": "no_answer",
         "status": 200,
-        "ms": 43965.3,
+        "ms": 42598.0,
         "error": null,
         "hit": true,
-        "keywords": [
-          "贾母",
-          "王夫人",
-          "林黛玉",
-          "薛宝钗"
-        ],
+        "keywords": [],
         "citation_count": 3,
         "contract_support_rate": 1.0,
-        "answer_state": "answered",
-        "answer": "## 结论  \n贾宝玉与贾母是祖孙关系 [证据 1]；贾宝玉与王夫人是祖孙关系 [证据 2]；贾宝玉与林黛玉是兄妹关系 [证据 1]；贾宝玉与薛宝钗是兄妹关系 [证据 1]。  \n\n## 归纳  \n贾宝玉与贾母、王夫人是祖孙关系，与林黛玉、薛宝钗是兄妹关系。  \n\n## 依据  \n贾宝玉与贾母的关系在文中提到贾母对贾宝玉的怜爱 [证据 1]；贾宝玉与王夫人关系在文中提到王夫人对贾宝玉的管教 [证据 2]；贾宝玉与林黛玉的关系在文中提到贾母将林黛玉与贾宝玉一同坐卧 [证据 1]；贾宝玉与薛宝钗的关系在文中提到贾母将薛宝钗与贾宝玉一同坐卧 [证据 1]。"
+        "answer_state": "no_answer",
+        "answer": "## 结论\n资料不足：原文未直接说明所问实体之间的关系。\n\n## 归纳\n不能以间接线索推导关系。\n\n## 依据"
       }
     ]
   },
   "concurrent_retrieval": {
     "workers": 4,
     "success_rate": 1.0,
-    "p95_ms": 1574.8108749976382
+    "p95_ms": 2075.2717909927014
   }
 }
