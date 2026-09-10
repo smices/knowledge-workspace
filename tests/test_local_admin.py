@@ -1,4 +1,8 @@
 from fastapi.testclient import TestClient
+import os
+from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -43,3 +47,34 @@ def test_initial_local_admin_manages_idp_access_without_profile_state(monkeypatc
     disabled = TestClient(main.app)
     disabled.cookies.set(settings.identity_session_cookie, _sign_session(Principal("idp-user-1", "tenant-1", frozenset())))
     assert disabled.get("/api/v1/documents").status_code == 403
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated TEST_DATABASE_URL")
+def test_concurrent_postgres_bootstrap_creates_one_admin(monkeypatch):
+    from sqlalchemy import text
+    from sqlalchemy.engine import make_url
+
+    url = make_url(os.environ["TEST_DATABASE_URL"])
+    assert url.get_backend_name() == "postgresql"
+    schema = "bootstrap_test_" + uuid4().hex
+    control = create_engine(url)
+    with control.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    engine = create_engine(url.update_query_dict({"options": f"-csearch_path={schema}"}))
+    try:
+        db.Base.metadata.create_all(engine)
+        session = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr(local_admin, "SessionLocal", session)
+        monkeypatch.setattr(settings, "identity_default_tenant_id", "bootstrap-test")
+        monkeypatch.setattr(settings, "local_admin_username", "test-installer")
+        monkeypatch.setattr(settings, "local_admin_password", "synthetic-test-password")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda _: local_admin.ensure_local_admin(), range(2)))
+        with session() as store:
+            assert store.query(db.LocalAdminCredential).count() == 1
+            assert store.query(db.PrincipalRole).count() == 1
+    finally:
+        engine.dispose()
+        with control.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        control.dispose()

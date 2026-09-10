@@ -82,7 +82,8 @@ CACHE_CONTRACT_VERSION = "direct-evidence-v5"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    if settings.auth_mode.lower() == "dev":
+        init_db()
     if settings.auth_mode.lower() == "oidc" or settings.local_admin_username or settings.local_admin_password:
         ensure_local_admin()
     ensure_collection()

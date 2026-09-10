@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.auth import Principal
@@ -46,6 +46,8 @@ def verify_password(password: str, encoded: str) -> bool:
 def ensure_local_admin() -> None:
     """Create the configured account once; never reset it from configuration."""
     with SessionLocal() as db:
+        if db.bind.dialect.name == "postgresql":
+            db.execute(text("SELECT pg_advisory_xact_lock(734106873)"))
         existing = db.get(LocalAdminCredential, LOCAL_ADMIN_CREDENTIAL_ID)
         if existing:
             if db.get(DbPrincipal, existing.principal_id) is None:
