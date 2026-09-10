@@ -129,17 +129,11 @@ API → 身份认证 → PostgreSQL 获取有效角色/权限
 {tenant_id}/documents/{document_id}/versions/{version}/source/{filename}
 ```
 
-数据库保存 object key、大小、MIME、hash、版本和上传者。删除文档时先标记数据库状态，再异步删除 Qdrant points 和对象；失败可重试。
+数据库保存 object key、大小、MIME、hash、版本和上传者。当前实现删除时先提交数据库 tombstone 与清理事件，再异步删除对应版本的 Qdrant points；失败可重试。原始对象保留，物理清理需按已批准的保留策略单独执行，本实现不承诺自动清除原件。
 
 ### Kafka
 
-建议 topic：
-
-- `knowledge.document.accepted.v1`
-- `knowledge.document.index.v1`
-- `knowledge.document.delete.v1`
-- `knowledge.document.rebuild.v1`
-- `knowledge.document.dlq.v1`
+当前实现复用 `KAFKA_DOCUMENT_TOPIC` 单一 topic，用 `event_type` 区分索引与删除；PostgreSQL `event_outbox` 负责可靠发布及延迟重试，`ingestion_dead_letters` 保存持久死信。没有额外创建 retry/DLQ topic。
 
 消息必须包含：
 
@@ -150,13 +144,14 @@ API → 身份认证 → PostgreSQL 获取有效角色/权限
   "document_id": "uuid",
   "document_version_id": "uuid",
   "version": 3,
+  "job_generation": 1,
   "event_type": "document.index",
   "occurred_at": "ISO-8601",
   "trace_id": "uuid"
 }
 ```
 
-Kafka key 使用 `tenant_id:document_id`，保证同一文档事件有序。Consumer 使用手动提交 offset；业务成功后提交，失败按重试策略进入 retry/DLQ。
+Kafka key 使用 `tenant_id:document_id`。Consumer 仅在业务成功、确认过期或重试/死信已持久化后提交 offset。发布采用至少一次语义；版本、任务 generation 和 attempt owner 防止旧任务覆盖新状态。业务失败最多尝试三次，之后进入数据库死信表；不能以 Kafka 消息顺序代替数据库版本检查。
 
 ### Redis
 

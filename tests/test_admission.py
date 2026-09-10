@@ -9,6 +9,20 @@ from app import admission
 from app.auth import Principal
 
 
+def test_ingestion_dependencies_have_bounded_network_waits():
+    from app import storage, vector
+    from app.config import settings
+    from worker.llm import client
+
+    assert storage.s3.meta.config.connect_timeout == settings.dependency_timeout_seconds
+    assert storage.s3.meta.config.read_timeout == settings.dependency_timeout_seconds
+    assert storage.s3.meta.config.retries["total_max_attempts"] == 2
+    assert vector.client._client._timeout == settings.dependency_timeout_seconds
+    assert vector.async_client._client._timeout == settings.dependency_timeout_seconds
+    assert client.timeout == settings.model_timeout_seconds
+    assert client.max_retries == 0  # The durable ingestion job owns retries.
+
+
 class Redis:
     result = [1, 0]
     released = []

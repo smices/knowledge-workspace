@@ -5,13 +5,23 @@ from opencc import OpenCC
 from qdrant_client import AsyncQdrantClient, QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from app.config import settings
+from app.admission import run_sync
+from app.db import Document, DocumentGrant, DocumentVersion, Role, SessionLocal
+from sqlalchemy import select
 
-client = QdrantClient(url=settings.qdrant_url)
-async_client = AsyncQdrantClient(url=settings.qdrant_url)
+client = QdrantClient(url=settings.qdrant_url, timeout=settings.dependency_timeout_seconds)
+async_client = AsyncQdrantClient(url=settings.qdrant_url, timeout=settings.dependency_timeout_seconds)
 _to_traditional = OpenCC("s2t").convert
 MIN_LEXICAL_SCORE = 0.2
 SPARSE_VECTOR_NAME = "lexical"
 SPARSE_HASH_SIZE = 1 << 20
+# Bound the PG-to-Qdrant authorization filter. Overflow fails closed rather
+# than silently truncating the set and potentially returning stale vectors.
+VERSION_LIST_CEILING = 10_000
+
+
+class VersionScopeOverflow(RuntimeError):
+    """The PG authorization scope exceeded the bounded Qdrant filter."""
 
 
 def ensure_collection():
@@ -26,6 +36,7 @@ def ensure_collection():
             )
         if SPARSE_VECTOR_NAME not in (info.config.params.sparse_vectors or {}):
             raise RuntimeError("Qdrant collection has no lexical sparse vector; use a new QDRANT_COLLECTION and reindex")
+        _ensure_payload_index("document_version_id")
         return
     else:
         try:
@@ -35,16 +46,23 @@ def ensure_collection():
         except UnexpectedResponse as exc:
             if exc.status_code != 409 or "already exists" not in exc.content.decode(errors="replace").lower():
                 raise
-            return
-    for field in ("tenant_id", "document_id", "allowed_roles"):
-        try:
-            client.create_payload_index(settings.qdrant_collection, field, models.PayloadSchemaType.KEYWORD)
-        except Exception:
-            pass
+            # Another worker won collection creation; still ensure the
+            # authorization payload indexes below.
+    for field in ("tenant_id", "document_id", "document_version_id", "allowed_roles"):
+        _ensure_payload_index(field)
     try:
         client.create_payload_index(settings.qdrant_collection, "content", models.TextIndexParams(type=models.TextIndexType.TEXT, tokenizer=models.TokenizerType.MULTILINGUAL, min_token_len=1, max_token_len=40, lowercase=True))
     except Exception:
         pass
+
+
+def _ensure_payload_index(field: str):
+    try:
+        client.create_payload_index(settings.qdrant_collection, field, models.PayloadSchemaType.KEYWORD)
+    except UnexpectedResponse as exc:
+        content = exc.content.decode(errors="replace").lower()
+        if exc.status_code != 409 or "already exists" not in content:
+            raise RuntimeError(f"Qdrant payload index unavailable: {field}") from exc
 
 
 def _focus_parts(text: str) -> list[str]:
@@ -140,10 +158,43 @@ def _rank_points(points, query: str, limit: int, aliases=None):
     return [SimpleNamespace(payload=point.payload, score=point.score) for point in accepted[:limit]]
 
 
-def _filter(tenant_id: str, roles: set[str]) -> models.Filter:
+def current_ready_version_ids(tenant_id: str, roles: set[str], db=None) -> list[str]:
+    if not roles:
+        return []
+    statement = (
+        select(DocumentVersion.id)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .join(DocumentGrant, DocumentGrant.document_id == Document.id)
+        .join(Role, Role.id == DocumentGrant.role_id)
+        .where(
+            Document.tenant_id == tenant_id,
+            Document.status == "ready",
+            DocumentVersion.status == "ready",
+            Document.version == DocumentVersion.version,
+            Role.tenant_id == tenant_id,
+            Role.name.in_(roles),
+        )
+        .distinct()
+    )
+    if db is not None:
+        rows = list(db.scalars(statement.limit(VERSION_LIST_CEILING + 1)))
+    else:
+        with SessionLocal() as session:
+            rows = list(session.scalars(statement.limit(VERSION_LIST_CEILING + 1)))
+    if len(rows) > VERSION_LIST_CEILING:
+        raise VersionScopeOverflow("current document version scope exceeds configured ceiling")
+    return rows
+
+
+def _filter(tenant_id: str, roles: set[str], version_ids: list[str]) -> models.Filter:
+    version_condition = models.FieldCondition(
+        key="document_version_id",
+        match=models.MatchAny(any=version_ids) if version_ids else models.MatchValue(value="__no_current_version__"),
+    )
     return models.Filter(must=[
         models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant_id)),
         models.FieldCondition(key="allowed_roles", match=models.MatchAny(any=list(roles))),
+        version_condition,
     ])
 
 
@@ -155,8 +206,11 @@ def _prefetch(vector, query_text: str, filters: models.Filter, limit: int):
 
 
 def search(vector, tenant_id: str, roles: set[str], limit: int, query_text: str | None = None,
-           aliases=None):
-    filters = _filter(tenant_id, roles)
+           aliases=None, version_ids=None, db=None):
+    version_ids = current_ready_version_ids(tenant_id, roles, db) if version_ids is None else version_ids
+    if not roles or not version_ids:
+        return []
+    filters = _filter(tenant_id, roles, version_ids)
     if not query_text:
         return client.query_points(collection_name=settings.qdrant_collection, query=vector,
                                    query_filter=filters, limit=limit, with_payload=True).points
@@ -169,9 +223,13 @@ def search(vector, tenant_id: str, roles: set[str], limit: int, query_text: str 
 
 
 async def search_async(vector, tenant_id: str, roles: set[str], limit: int,
-                       query_text: str | None = None, aliases=None):
+                       query_text: str | None = None, aliases=None, version_ids=None):
     """Cancellable, tenant- and role-filtered hybrid retrieval."""
-    filters = _filter(tenant_id, roles)
+    if version_ids is None:
+        version_ids = await run_sync(current_ready_version_ids, tenant_id, roles)
+    if not roles or not version_ids:
+        return []
+    filters = _filter(tenant_id, roles, version_ids)
     if not query_text:
         return (await async_client.query_points(collection_name=settings.qdrant_collection, query=vector,
                                                 query_filter=filters, limit=limit, with_payload=True)).points

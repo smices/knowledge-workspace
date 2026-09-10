@@ -8,6 +8,7 @@ from math import fsum, sqrt
 from typing import Awaitable, Callable
 
 from redis import Redis
+from sqlalchemy import select, update
 
 from app.config import settings
 
@@ -42,18 +43,50 @@ def normalize_query(query: str) -> str:
     return re.sub(r"[?？!！。,.，;；:：]+$", "", value).strip()
 
 
-def knowledge_revision(tenant_id: str) -> int:
+def knowledge_revision(tenant_id: str, db=None) -> int | None:
+    """Read the PostgreSQL-owned revision; cache failures fail closed."""
     try:
-        return int(cache.get(f"knowledge:revision:{tenant_id}") or 0)
-    except Exception:
-        return 0
-
-
-def bump_knowledge_revision(tenant_id: str) -> int | None:
-    try:
-        return int(cache.incr(f"knowledge:revision:{tenant_id}"))
+        if db is None:
+            from app.db import SessionLocal
+            with SessionLocal() as session:
+                value = session.scalar(select(_tenant_model().knowledge_revision).where(_tenant_model().id == tenant_id))
+        else:
+            value = db.scalar(select(_tenant_model().knowledge_revision).where(_tenant_model().id == tenant_id))
+        return int(value) if value is not None else None
     except Exception:
         return None
+
+
+def bump_knowledge_revision(tenant_id: str, db=None) -> int | None:
+    """Atomically bump a tenant revision; a passed transaction owns commit."""
+    if db is not None:
+        return _bump(db, tenant_id)
+    try:
+        from app.db import SessionLocal
+        with SessionLocal() as session:
+            value = _bump(session, tenant_id)
+            session.commit()
+            return value
+    except Exception:
+        return None
+
+
+def _tenant_model():
+    from app.db import Tenant
+    return Tenant
+
+
+def _bump(db, tenant_id: str) -> int | None:
+    tenant = _tenant_model()
+    changed = db.execute(
+        update(tenant)
+        .where(tenant.id == tenant_id)
+        .values(knowledge_revision=tenant.knowledge_revision + 1)
+    )
+    if not changed.rowcount:
+        return None
+    db.flush()
+    return db.scalar(select(tenant.knowledge_revision).where(tenant.id == tenant_id))
 
 
 ENTITY_NOISE = re.compile(

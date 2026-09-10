@@ -28,6 +28,7 @@ class Tenant(Base):
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    knowledge_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -151,6 +152,7 @@ class IngestionJob(Base):
     stage: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
+    generation: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     trace_id: Mapped[str | None] = mapped_column(String(64), index=True)
     worker_id: Mapped[str | None] = mapped_column(String(255))
     input_hash: Mapped[str | None] = mapped_column(String(128))
@@ -175,6 +177,21 @@ class EventOutbox(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class IngestionDeadLetter(Base):
+    __tablename__ = "ingestion_dead_letters"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    event_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    event_type: Mapped[str | None] = mapped_column(String(128), index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    document_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    document_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    error_code: Mapped[str] = mapped_column(String(128))
+    error_message: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

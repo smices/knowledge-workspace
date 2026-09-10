@@ -5,7 +5,7 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from app import vector
-from app.vector import sparse_vector
+from app.vector import VersionScopeOverflow, sparse_vector
 
 
 def test_sparse_vector_is_stable_and_qdrant_can_fuse_dense_and_lexical_results():
@@ -44,3 +44,16 @@ def test_collection_creation_tolerates_api_worker_startup_race(monkeypatch):
 
     monkeypatch.setattr(vector, "client", RacingClient())
     vector.ensure_collection()
+
+
+def test_current_version_scope_overflow_is_explicit(monkeypatch):
+    class TooManyRows:
+        def scalars(self, statement):
+            return iter(range(vector.VERSION_LIST_CEILING + 1))
+
+    try:
+        vector.current_ready_version_ids("tenant-a", {"finance"}, TooManyRows())
+    except VersionScopeOverflow as exc:
+        assert "ceiling" in str(exc)
+    else:
+        raise AssertionError("version scope overflow must be explicit")

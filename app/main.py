@@ -4,6 +4,8 @@ from typing import Literal
 import asyncio
 import hmac
 import json
+import logging
+import mimetypes
 import re
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -13,7 +15,7 @@ from time import perf_counter
 from uuid import UUID, uuid4
 
 from fastapi import Depends, File, Form, FastAPI, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAI
 from qdrant_client import models
@@ -56,6 +58,7 @@ from app.db import (
     DocumentGrant,
     DocumentVersion,
     EntityAlias,
+    IngestionJob,
     KnowledgeBase,
     KnowledgeRelation,
     Principal as DbPrincipal,
@@ -68,9 +71,9 @@ from app.db import (
     init_db,
 )
 from app.local_admin import authenticate_local_admin, ensure_local_admin
-from app.events import publish_document, publish_documents
-from app.storage import put_file
-from app.vector import (_focus_parts, async_client as async_vector_client, client as vector_client,
+from app.events import enqueue_document
+from app.storage import MAX_UPLOAD_BYTES, delete_file, file_exists, put_file, read_upload
+from app.vector import (VersionScopeOverflow, _focus_parts, async_client as async_vector_client, client as vector_client,
                         ensure_collection, normalize_mention, search, search_async)
 
 llm = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url,
@@ -95,6 +98,40 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=f"{settings.brand_name} API", version="0.2.0", lifespan=lifespan)
+logger = logging.getLogger("uvicorn.error")
+
+
+class RequestMetrics:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        trace_id, started, status = str(uuid4()), perf_counter(), 500
+
+        async def traced_send(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                message = dict(message, headers=[*message.get("headers", []),
+                                                 (b"x-request-id", trace_id.encode())])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, traced_send)
+        finally:
+            logger.info(json.dumps({"event": "knowledge_request", "request_id": trace_id,
+                                    "method": scope["method"], "route": getattr(scope.get("route"), "path", "unmatched"),
+                                    "status": status, "duration_ms": round((perf_counter() - started) * 1000, 1)}))
+
+
+app.add_middleware(RequestMetrics)
+
+
+@app.exception_handler(VersionScopeOverflow)
+async def version_scope_overflow(_request, _error):
+    return JSONResponse(status_code=503, content={"detail": "Document scope exceeds retrieval capacity"})
 
 
 @app.get("/brand.js", include_in_schema=False)
@@ -220,8 +257,12 @@ def approved_aliases(principal: Principal, query: str) -> tuple[dict, list[dict]
             DocumentVersion, DocumentVersion.id == EntityAlias.document_version_id
         ).join(Document, Document.id == DocumentVersion.document_id).where(
             EntityAlias.tenant_id == principal.tenant_id, EntityAlias.status == "approved",
-            Document.status != "deleted", Document.version == DocumentVersion.version,
-        )).all()
+            *document_access(principal), Document.status == "ready",
+            DocumentVersion.status == "ready", Document.version == DocumentVersion.version,
+        ).limit(5001)).all()
+    # ponytail: bound alias expansion; add a normalized canonical index before this ceiling.
+    if len(rows) > 5000:
+        raise HTTPException(503, "Alias scope exceeds configured retrieval capacity")
     records = [{"id": alias.id, "canonical": normalize_mention(alias.canonical),
                 "alias": normalize_mention(alias.alias), "document_id": document_id,
                 "document_version": version,
@@ -456,7 +497,10 @@ def persist_relationships(principal: Principal, contexts: list[dict], edges: lis
     with SessionLocal() as db:
         versions = db.execute(select(Document.id, DocumentVersion.version, DocumentVersion.id).join(
             DocumentVersion, DocumentVersion.document_id == Document.id
-        ).where(Document.tenant_id == principal.tenant_id)).all()
+        ).where(*document_access(principal), Document.status == "ready",
+                DocumentVersion.version == Document.version, DocumentVersion.status == "ready",
+                Document.id.in_([key[0] for key in document_keys]))
+            .order_by(Document.id).with_for_update(of=Document)).all()
         version_ids = {(document_id, version): version_id for document_id, version, version_id in versions
                        if (document_id, version) in document_keys}
         for edge in edges:
@@ -632,38 +676,49 @@ def account(p: Principal = Depends(principal_from_session)):
     return RedirectResponse(identity_account_url(), status_code=303)
 
 
-@app.post("/api/v1/documents", status_code=202)
-async def upload_document(
-    file: UploadFile = File(...),
-    roles: str | None = Form(default=None),
-    knowledge_base: str | None = Form(default=None),
-    p: Principal = Depends(principal_from_session),
-):
-    if not file.filename:
-        raise HTTPException(400, "filename required")
-    filename = Path(file.filename.replace("\\", "/")).name
+SUPPORTED_UPLOAD_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+    "text/markdown",
+}
+# ponytail: process-local 20-slot cap; use shared admission if multi-replica upload pressure matters.
+# ponytail: two 100MB in-memory uploads per process fit the 2Gi API limit;
+# use streaming persistence before increasing active upload concurrency.
+_UPLOAD_SLOTS = asyncio.Semaphore(2)
+
+
+def _content_type(filename: str, content_type: str | None) -> str:
+    return content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def _upload_metadata(file: UploadFile) -> tuple[str, str]:
+    filename = Path((file.filename or "").replace("\\", "/")).name
     if not filename:
         raise HTTPException(400, "filename required")
-    raw = await file.read()
-    if len(raw) > 100 * 1024 * 1024:
+    content_type = _content_type(filename, file.content_type)
+    if content_type not in SUPPORTED_UPLOAD_TYPES:
+        raise HTTPException(415, "unsupported document type")
+    return filename, content_type
+
+
+async def _read_document_upload(file: UploadFile, filename: str, content_type: str) -> bytes:
+    raw = await read_upload(file, MAX_UPLOAD_BYTES)
+    if not raw:
+        raise HTTPException(400, "empty file")
+    if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "file exceeds 100MB limit")
-    requested_roles = {x.strip() for x in (roles or "").split(",") if x.strip()}
-    knowledge_base_name = (knowledge_base or "").strip()
-    if len(knowledge_base_name) > 255:
-        raise HTTPException(422, "knowledge base name exceeds 255 characters")
-    if requested_roles and "admin" not in p.roles:
-        raise HTTPException(403, "only admin can assign document roles")
-    if knowledge_base_name and "admin" not in p.roles:
-        raise HTTPException(403, "only admin can assign a knowledge base")
-    effective_roles = requested_roles or set(p.roles)
+    return raw
+
+
+def _persist_upload(p, filename, content_type, raw, roles, knowledge_base_name):
     document_id = str(uuid4())
     version_id = str(uuid4())
     source_hash = sha256(raw).hexdigest()
     key = f"{p.tenant_id}/documents/{document_id}/versions/1/source/{filename}"
-    duplicate_id = None
-    duplicate_status = None
     with SessionLocal() as db:
         ensure_principal(db, p)
+        db.scalar(select(Tenant).where(Tenant.id == p.tenant_id).with_for_update())
         knowledge_base_id = None
         if knowledge_base_name:
             base = db.scalar(select(KnowledgeBase).where(
@@ -676,46 +731,79 @@ async def upload_document(
                 db.add(base)
                 db.flush()
             knowledge_base_id = base.id
-        duplicate = db.execute(select(Document.id, Document.status).join(DocumentVersion).where(
+        duplicate = db.execute(select(Document, DocumentVersion).join(
+            DocumentVersion, DocumentVersion.document_id == Document.id
+        ).join(DocumentGrant, DocumentGrant.document_id == Document.id).join(Role, Role.id == DocumentGrant.role_id).where(
             Document.tenant_id == p.tenant_id,
             Document.knowledge_base_id == knowledge_base_id,
             DocumentVersion.source_hash == source_hash,
-            Document.status != "deleted",
-        )).first()
+            Document.status == "ready",
+            DocumentVersion.version == Document.version,
+            DocumentVersion.status == "ready",
+            Role.tenant_id == p.tenant_id,
+            Role.name.in_(p.roles),
+        ).distinct()).first()
         if duplicate:
-            duplicate_id, duplicate_status = duplicate
-            if duplicate_status in {"queued", "failed"}:
-                doc = db.get(Document, duplicate_id)
-                doc.status, doc.error = "queued", None
-                audit(db, p, "document.requeue", "document", duplicate_id, "accepted")
-            db.commit()
-        else:
-            doc = Document(id=document_id, tenant_id=p.tenant_id, title=filename, status="queued",
-                           created_by=p.subject, knowledge_base_id=knowledge_base_id, object_key=key,
-                           content_type=file.content_type or "application/octet-stream")
-            version = DocumentVersion(id=version_id, document_id=document_id, version=1,
-                                     source_object_key=key, source_filename=filename,
-                                     content_type=file.content_type or "application/octet-stream",
-                                     source_hash=source_hash, created_by=p.subject)
-            db.add_all([doc, version])
-            db.flush()
-            for role_name in effective_roles:
-                role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == role_name))
-                if role is None:
-                    role = Role(id=f"{p.tenant_id}:{role_name}", tenant_id=p.tenant_id, name=role_name)
-                    db.add(role)
-                    db.flush()
-                db.add(DocumentGrant(document_id=document_id, role_id=role.id))
+            duplicate_doc, duplicate_version = duplicate
+            if file_exists(duplicate_version.source_object_key):
+                return {"document_id": duplicate_doc.id, "status": "reused"}
+
+        doc = Document(id=document_id, tenant_id=p.tenant_id, title=filename, status="queued",
+                       created_by=p.subject, knowledge_base_id=knowledge_base_id, object_key=key,
+                       content_type=content_type)
+        version = DocumentVersion(id=version_id, document_id=document_id, version=1,
+                                 source_object_key=key, source_filename=filename,
+                                 content_type=content_type, source_hash=source_hash, created_by=p.subject)
+        db.add_all([doc, version])
+        db.flush()
+        for role_name in roles:
+            role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == role_name))
+            if role is None:
+                role = Role(id=f"{p.tenant_id}:{role_name}", tenant_id=p.tenant_id, name=role_name)
+                db.add(role)
+                db.flush()
+            db.add(DocumentGrant(document_id=document_id, role_id=role.id))
+        commit_started = False
+        try:
+            put_file(key, BytesIO(raw), content_type)
+            enqueue_document(db, doc, version, trace_id=str(uuid4()))
+            bump_knowledge_revision(p.tenant_id, db)
             audit(db, p, "document.upload", "document", document_id, "accepted")
+            commit_started = True
             db.commit()
-    if duplicate_id:
-        if duplicate_status in {"queued", "failed"}:
-            await publish_document(duplicate_id)
-            return {"document_id": duplicate_id, "status": "queued"}
-        return {"document_id": duplicate_id, "status": "reused"}
-    put_file(key, BytesIO(raw), file.content_type or "application/octet-stream")
-    await publish_document(document_id)
+        except Exception as exc:
+            db.rollback()
+            # A failed commit can be ambiguous; retain the object for orphan
+            # cleanup instead of deleting a source with a durable outbox row.
+            if not commit_started:
+                with suppress(Exception):
+                    delete_file(key)
+            raise HTTPException(503, "document storage unavailable") from exc
     return {"document_id": document_id, "document_version_id": version_id, "status": "queued"}
+
+
+@app.post("/api/v1/documents", status_code=202)
+async def upload_document(
+    file: UploadFile = File(...),
+    roles: str | None = Form(default=None),
+    knowledge_base: str | None = Form(default=None),
+    p: Principal = Depends(principal_from_session),
+):
+    filename, content_type = _upload_metadata(file)
+    requested_roles = {x.strip() for x in (roles or "").split(",") if x.strip()}
+    knowledge_base_name = (knowledge_base or "").strip()
+    if len(knowledge_base_name) > 255:
+        raise HTTPException(422, "knowledge base name exceeds 255 characters")
+    if requested_roles and "admin" not in p.roles:
+        raise HTTPException(403, "only admin can assign document roles")
+    if knowledge_base_name and "admin" not in p.roles:
+        raise HTTPException(403, "only admin can assign a knowledge base")
+    effective_roles = requested_roles or set(p.roles)
+    if not effective_roles:
+        raise HTTPException(403, "at least one document role required")
+    async with _UPLOAD_SLOTS:
+        raw = await _read_document_upload(file, filename, content_type)
+        return await run_sync(_persist_upload, p, filename, content_type, raw, effective_roles, knowledge_base_name)
 
 
 def document_access(p: Principal):
@@ -763,73 +851,107 @@ def document_status(document_id: str, p: Principal = Depends(principal_from_sess
 
 
 @app.post("/api/v1/documents/{document_id}/reindex")
-async def reindex_document(document_id: str, p: Principal = Depends(principal_from_session)):
+def reindex_document(document_id: str, p: Principal = Depends(principal_from_session)):
     require_admin(p)
     with SessionLocal() as db:
-        doc = db.scalar(select(Document).where(Document.id == document_id, Document.tenant_id == p.tenant_id))
+        doc = db.scalar(select(Document).where(
+            Document.id == document_id, Document.tenant_id == p.tenant_id
+        ).with_for_update())
         if doc is None:
             raise HTTPException(404, "document not found")
-        doc.status, doc.error = "queued", None
+        if doc.status in {"deleted", "deleting"}:
+            raise HTTPException(409, "deleted document cannot be reindexed")
+        version = db.scalar(select(DocumentVersion).where(
+            DocumentVersion.document_id == doc.id, DocumentVersion.version == doc.version
+        ).with_for_update())
+        if version is None:
+            raise HTTPException(409, "document version missing")
+        doc.status, doc.error, version.status = "queued", None, "queued"
+        enqueue_document(db, doc, version, trace_id=str(uuid4()))
+        bump_knowledge_revision(p.tenant_id, db)
+        audit(db, p, "document.reindex", "document", document_id, "accepted")
         db.commit()
-    await publish_document(document_id)
     return {"document_id": document_id, "status": "queued"}
 
 
 @app.post("/api/v1/admin/documents/reindex-all")
-async def reindex_all_documents(p: Principal = Depends(principal_from_session)):
+def reindex_all_documents(p: Principal = Depends(principal_from_session)):
     require_admin(p)
     with SessionLocal() as db:
         documents = db.scalars(select(Document).where(
-            Document.tenant_id == p.tenant_id, Document.status != "deleted"
-        )).all()
+            Document.tenant_id == p.tenant_id, Document.status.notin_(["deleted", "deleting"])
+        ).order_by(Document.id).with_for_update()).all()
+        queued = 0
         for document in documents:
-            document.status, document.error = "queued", None
+            version = db.scalar(select(DocumentVersion).where(
+                DocumentVersion.document_id == document.id, DocumentVersion.version == document.version
+            ).with_for_update())
+            if version is None:
+                continue
+            document.status, document.error, version.status = "queued", None, "queued"
+            enqueue_document(db, document, version, trace_id=str(uuid4()))
             audit(db, p, "document.reindex_all", "document", document.id, "accepted")
+            queued += 1
+        if queued:
+            bump_knowledge_revision(p.tenant_id, db)
         db.commit()
-    if documents:
-        await publish_documents([document.id for document in documents])
-    return {"queued": len(documents)}
+    return {"queued": queued}
 
 
 @app.post("/api/v1/documents/{document_id}/cancel")
 def cancel_document(document_id: str, p: Principal = Depends(principal_from_session)):
     require_admin(p)
     with SessionLocal() as db:
-        doc = db.scalar(select(Document).where(Document.id == document_id, Document.tenant_id == p.tenant_id))
+        doc = db.scalar(select(Document).where(
+            Document.id == document_id, Document.tenant_id == p.tenant_id
+        ).with_for_update())
         if doc is None:
             raise HTTPException(404, "document not found")
-        if doc.status in {"ready", "deleted", "canceled"}:
+        if doc.status in {"ready", "deleted", "deleting", "canceled"}:
             raise HTTPException(409, f"cannot cancel document in status {doc.status}")
         doc.status, doc.error = "canceled", "任务由管理员取消"
+        version = db.scalar(select(DocumentVersion).where(
+            DocumentVersion.document_id == doc.id, DocumentVersion.version == doc.version
+        ).with_for_update())
+        if version is not None and version.status not in {"ready", "deleted"}:
+            version.status = "canceled"
+        bump_knowledge_revision(p.tenant_id, db)
         audit(db, p, "document.cancel", "document", document_id, "accepted")
         db.commit()
     return {"document_id": document_id, "status": "canceled"}
 
 
-@app.delete("/api/v1/documents/{document_id}")
+@app.delete("/api/v1/documents/{document_id}", status_code=202)
 def delete_document(document_id: str, p: Principal = Depends(principal_from_session)):
     require_admin(p)
     with SessionLocal() as db:
-        doc = db.scalar(select(Document).where(Document.id == document_id, Document.tenant_id == p.tenant_id))
+        doc = db.scalar(select(Document).where(
+            Document.id == document_id, Document.tenant_id == p.tenant_id
+        ).with_for_update())
         if doc is None:
             raise HTTPException(404, "document not found")
-        vector_client.delete(
-            settings.qdrant_collection,
-            models.FilterSelector(filter=models.Filter(must=[
-                models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id)),
-            ])),
+        if doc.status == "deleted":
+            return {"document_id": document_id, "status": "deleted"}
+        retrying = doc.status == "deleting"
+        doc.status, doc.error = "deleting", None
+        statement = select(DocumentVersion).where(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.status != "deleted",
         )
-        db.execute(delete(KnowledgeRelation).where(KnowledgeRelation.document_version_id.in_(
-            select(DocumentVersion.id).where(DocumentVersion.document_id == document_id)
-        )))
-        db.execute(delete(EntityAlias).where(EntityAlias.document_version_id.in_(
-            select(DocumentVersion.id).where(DocumentVersion.document_id == document_id)
-        )))
-        bump_knowledge_revision(p.tenant_id)
-        doc.status, doc.deleted_at = "deleted", func.now()
+        if retrying:
+            # Retry only exhausted cleanup; repeated DELETE must not steal a live attempt.
+            statement = statement.join(IngestionJob, IngestionJob.document_version_id == DocumentVersion.id).where(
+                IngestionJob.stage == "delete", IngestionJob.status == "dead_letter")
+        versions = db.scalars(statement.with_for_update(of=DocumentVersion)).all()
+        for version in versions:
+            enqueue_document(db, doc, version, event_type="document.delete", trace_id=str(uuid4()))
+        if not versions and not retrying:
+            doc.status, doc.deleted_at = "deleted", func.now()
+        bump_knowledge_revision(p.tenant_id, db)
         audit(db, p, "document.delete", "document", document_id, "accepted")
         db.commit()
-    return {"document_id": document_id, "status": "deleted"}
+        status = doc.status
+    return {"document_id": document_id, "status": status}
 
 
 @app.post("/api/v1/retrieval/search")
@@ -841,11 +963,12 @@ async def retrieve(body: SearchRequest, request: Request, p: Principal = Depends
 
 async def _retrieve(body: SearchRequest, p: Principal):
     started = perf_counter()
-    revision = await run_sync(knowledge_revision, p.tenant_id)
+    revision = await run_sync(query_revision, p.tenant_id)
     key = cache_key("retrieval", CACHE_CONTRACT_VERSION, p.tenant_id, sorted(p.roles), revision,
                     normalize_query(body.query), body.limit, settings.embedding_model)
     cached = await run_sync(cache_get, key)
     if cached is not None:
+        await run_sync(validate_query_result, p, revision, cached)
         return cached
     if not p.roles:
         result = {"results": []}
@@ -858,6 +981,7 @@ async def _retrieve(body: SearchRequest, p: Principal):
     contexts = [point.payload or {} for point in points]
     result = {"results": [dict(point.payload or {}, score=point.score) for point in points],
               "entity_bindings": alias_bindings(contexts, records)}
+    await run_sync(validate_query_result, p, revision, result)
     await run_sync(cache_put, key, result, 120)
     await run_sync(log_query, p, body.query, "retrieval", len(points), started)
     return result
@@ -883,7 +1007,52 @@ def _feedback_token(answer_id: str, p: Principal) -> str:
     return hmac.new(secret, message, sha256).hexdigest()
 
 
+def validate_query_result(p: Principal, revision: int, result: dict) -> None:
+    """Caches and slow generation cannot bypass current document authorization."""
+    if settings.auth_mode.lower() == "oidc":
+        from app.auth import _database_principal
+        current = _database_principal(p, provision=False, service_only=p.source == "service")
+        if current.roles != p.roles:
+            raise HTTPException(409, "Access changed; retry the query")
+    # Unrelated ingestion must not starve long answers. Cache writes retain
+    # their original revision key; validate only the evidence actually used.
+    query_revision(p.tenant_id)
+    evidence = result.get("results", result.get("citations", []))
+    bindings = result.get("entity_bindings", [])
+    if not evidence and not bindings:
+        return
+    keys = {(item.get("document_id"), item.get("document_version")) for item in evidence}
+    with SessionLocal() as db:
+        visible = set(db.execute(select(Document.id, DocumentVersion.version).join(
+            DocumentVersion, DocumentVersion.document_id == Document.id
+        ).where(*document_access(p), Document.status == "ready",
+                DocumentVersion.version == Document.version, DocumentVersion.status == "ready",
+                Document.id.in_([key[0] for key in keys]))).all())
+        if bindings:
+            binding_ids = {item.get("alias_id") for item in bindings}
+            approved = db.execute(select(EntityAlias.id, Document.id, DocumentVersion.version).join(
+                DocumentVersion, DocumentVersion.id == EntityAlias.document_version_id
+            ).join(Document, Document.id == DocumentVersion.document_id).where(
+                EntityAlias.id.in_(binding_ids), EntityAlias.tenant_id == p.tenant_id,
+                EntityAlias.status == "approved", *document_access(p),
+                Document.status == "ready", DocumentVersion.status == "ready",
+                DocumentVersion.version == Document.version,
+            )).all()
+            if binding_ids != {row[0] for row in approved if (row[1], row[2]) in keys}:
+                raise HTTPException(409, "Alias evidence changed; retry the query")
+    if not keys.issubset(visible):
+        raise HTTPException(409, "Evidence access changed; retry the query")
+
+
+def query_revision(tenant_id: str) -> int:
+    value = knowledge_revision(tenant_id)
+    if not isinstance(value, int):
+        raise HTTPException(503, "Knowledge authorization unavailable")
+    return value
+
+
 def _with_feedback(result: dict, p: Principal) -> dict:
+    validate_query_result(p, result["cache"]["knowledge_revision"], result)
     copy = dict(result)
     with SessionLocal() as db:
         copy["liked"] = db.scalar(select(func.count()).select_from(AnswerFeedback).where(
@@ -919,6 +1088,7 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
     similar = await run_sync(semantic_get, semantic_bucket, vector, entities, evidence)
     if similar is not None:
         result = _cache_result(similar, "l2", revision)
+        await run_sync(validate_query_result, p, revision, result)
         await run_sync(cache_put, exact_key, similar, 21600)
         await run_sync(log_query, p, body.query, "answer:l2", len(result.get("citations", [])), started)
         return result
@@ -952,6 +1122,7 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
         answer_text, state = direct_only_answer(contract)
         contract = direct_contract or evidence_contract(answer_text, contexts, state)
     result = _answer_result(answer_text, state, citations, contract, revision, alias_bindings(contexts, records))
+    await run_sync(validate_query_result, p, revision, result)
     await run_sync(cache_put, exact_key, result, 21600 if state == "answered" else 300)
     if state == "answered" and contract and all(
             item["support"] == "supported" and item["confidence"] >= 0.85 for item in contract):
@@ -961,7 +1132,7 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
 
 
 async def _answer(body: AnswerRequest, p: Principal):
-    revision = await run_sync(knowledge_revision, p.tenant_id)
+    revision = await run_sync(query_revision, p.tenant_id)
     scope = (p.tenant_id, sorted(p.roles), revision, body.limit, body.temperature,
              settings.embedding_model, settings.chat_model, "answer-prompt-v3")
     exact_key = cache_key("answer", CACHE_CONTRACT_VERSION, *scope, normalize_query(body.query))
@@ -979,12 +1150,13 @@ async def _answer(body: AnswerRequest, p: Principal):
 
 async def _graph(body: GraphRequest, p: Principal):
     started = perf_counter()
-    revision = await run_sync(knowledge_revision, p.tenant_id)
+    revision = await run_sync(query_revision, p.tenant_id)
     key = cache_key("graph", CACHE_CONTRACT_VERSION, p.tenant_id, sorted(p.roles), revision,
                     normalize_query(body.query), body.limit,
                     settings.embedding_model, settings.chat_model)
     cached = await run_sync(cache_get, key)
     if cached is not None:
+        await run_sync(validate_query_result, p, revision, cached)
         return cached
     if not p.roles:
         return {"nodes": [], "edges": [], "citations": [], "message": "没有可访问的知识。"}
@@ -1025,6 +1197,7 @@ async def _graph(body: GraphRequest, p: Principal):
               "citations": citations_for(points, contexts),
               "entity_bindings": alias_bindings(contexts, records),
               "message": "" if edges else "当前证据不足以确认人物或实体关系。"}
+    await run_sync(validate_query_result, p, revision, result)
     await run_sync(cache_put, key, result, 300)
     await run_sync(log_query, p, body.query, "graph", len(edges), started)
     return result
@@ -1236,8 +1409,8 @@ def document_content(document_id: str, p: Principal = Depends(principal_from_ses
         doc = db.scalar(select(Document).where(Document.id == document_id, *document_access(p)))
         if doc is None:
             raise HTTPException(404, "document not found")
-        version = db.scalar(select(DocumentVersion).where(DocumentVersion.document_id == doc.id)
-                            .order_by(DocumentVersion.version.desc()))
+        version = db.scalar(select(DocumentVersion).where(DocumentVersion.document_id == doc.id,
+                                                          DocumentVersion.version == doc.version))
         chunks = [] if version is None else db.scalars(
             select(Chunk).where(Chunk.document_version_id == version.id).order_by(Chunk.chunk_index)
         ).all()
@@ -1252,39 +1425,56 @@ def document_content(document_id: str, p: Principal = Depends(principal_from_ses
                 "chunk_count": len(chunks), "content": content}
 
 
+def _persist_replace(document_id, p, filename, content_type, raw):
+    with SessionLocal() as db:
+        doc = db.scalar(select(Document).where(
+            Document.id == document_id, Document.tenant_id == p.tenant_id
+        ).with_for_update())
+        if doc is None:
+            raise HTTPException(404, "document not found")
+        if doc.status in {"deleted", "deleting"}:
+            raise HTTPException(409, "deleted document cannot be replaced")
+        version = doc.version + 1
+        key = f"{p.tenant_id}/documents/{doc.id}/versions/{version}/source/{filename}"
+        current_versions = db.scalars(select(DocumentVersion).where(
+            DocumentVersion.document_id == doc.id, DocumentVersion.status != "deleted"
+        ).with_for_update()).all()
+        new_version = DocumentVersion(id=str(uuid4()), document_id=doc.id, version=version,
+                                      source_object_key=key, source_filename=filename,
+                                      content_type=content_type, source_hash=sha256(raw).hexdigest(),
+                                      created_by=p.subject, status="queued")
+        doc.version, doc.object_key, doc.content_type, doc.status, doc.error = version, key, content_type, "queued", None
+        db.add(new_version)
+        db.flush()
+        commit_started = False
+        try:
+            put_file(key, BytesIO(raw), content_type)
+            for old_version in current_versions:
+                if old_version.id == new_version.id:
+                    continue
+                old_version.status = "superseded"
+                enqueue_document(db, doc, old_version, event_type="document.delete", trace_id=str(uuid4()))
+            enqueue_document(db, doc, new_version, trace_id=str(uuid4()))
+            audit(db, p, "document.replace", "document", doc.id, "accepted")
+            bump_knowledge_revision(p.tenant_id, db)
+            commit_started = True
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            if not commit_started:
+                with suppress(Exception):
+                    delete_file(key)
+            raise HTTPException(503, "document storage unavailable") from exc
+    return {"document_id": document_id, "version": version, "status": "queued"}
+
+
 @app.put("/api/v1/documents/{document_id}", status_code=202)
 async def replace_document(document_id: str, file: UploadFile = File(...), p: Principal = Depends(principal_from_session)):
     require_admin(p)
-    if not file.filename:
-        raise HTTPException(400, "filename required")
-    filename = Path(file.filename.replace("\\", "/")).name
-    if not filename:
-        raise HTTPException(400, "filename required")
-    raw = await file.read()
-    if len(raw) > 100 * 1024 * 1024:
-        raise HTTPException(413, "file exceeds 100MB limit")
-    with SessionLocal() as db:
-        doc = db.scalar(select(Document).where(Document.id == document_id, Document.tenant_id == p.tenant_id))
-        if doc is None:
-            raise HTTPException(404, "document not found")
-        version = doc.version + 1
-        key = f"{p.tenant_id}/documents/{doc.id}/versions/{version}/source/{filename}"
-        db.execute(delete(KnowledgeRelation).where(KnowledgeRelation.document_version_id.in_(
-            select(DocumentVersion.id).where(DocumentVersion.document_id == doc.id)
-        )))
-        db.execute(delete(EntityAlias).where(EntityAlias.document_version_id.in_(
-            select(DocumentVersion.id).where(DocumentVersion.document_id == doc.id)
-        )))
-        doc.version, doc.object_key, doc.content_type, doc.status, doc.error = version, key, file.content_type, "queued", None
-        db.add(DocumentVersion(id=str(uuid4()), document_id=doc.id, version=version,
-                               source_object_key=key, source_filename=filename,
-                               content_type=file.content_type or "application/octet-stream",
-                               source_hash=sha256(raw).hexdigest(), created_by=p.subject))
-        audit(db, p, "document.replace", "document", doc.id, "accepted")
-        db.commit()
-    put_file(key, BytesIO(raw), file.content_type or "application/octet-stream")
-    await publish_document(document_id)
-    return {"document_id": document_id, "version": version, "status": "queued"}
+    filename, content_type = _upload_metadata(file)
+    async with _UPLOAD_SLOTS:
+        raw = await _read_document_upload(file, filename, content_type)
+        return await run_sync(_persist_replace, document_id, p, filename, content_type, raw)
 
 
 @app.get("/api/v1/admin/tasks")
@@ -1314,7 +1504,9 @@ def admin_relations(query: str = "", p: Principal = Depends(principal_from_sessi
         statement = select(KnowledgeRelation, Document.title, DocumentVersion.version).join(
             DocumentVersion, DocumentVersion.id == KnowledgeRelation.document_version_id
         ).join(Document, Document.id == DocumentVersion.document_id).where(
-            KnowledgeRelation.tenant_id == p.tenant_id, Document.status != "deleted"
+            KnowledgeRelation.tenant_id == p.tenant_id, *document_access(p),
+            Document.status == "ready", DocumentVersion.status == "ready",
+            Document.version == DocumentVersion.version,
         )
         value = query.strip()
         if value:
@@ -1337,7 +1529,9 @@ def admin_entity_aliases(p: Principal = Depends(principal_from_session)):
         rows = db.execute(select(EntityAlias, Document.title, DocumentVersion.version).join(
             DocumentVersion, DocumentVersion.id == EntityAlias.document_version_id
         ).join(Document, Document.id == DocumentVersion.document_id).where(
-            EntityAlias.tenant_id == p.tenant_id, Document.status != "deleted"
+            EntityAlias.tenant_id == p.tenant_id, *document_access(p),
+            Document.status == "ready", DocumentVersion.status == "ready",
+            Document.version == DocumentVersion.version,
         ).order_by(EntityAlias.status, EntityAlias.created_at.desc()).limit(300)).all()
         return {"items": [{"id": item.id, "canonical": item.canonical, "alias": item.alias,
                             "status": item.status, "source": item.source, "excerpt": item.excerpt,
@@ -1354,9 +1548,10 @@ def create_entity_alias(body: EntityAliasRequest, p: Principal = Depends(princip
         raise HTTPException(422, "canonical and alias must differ")
     with SessionLocal() as db:
         version = db.scalar(select(DocumentVersion).join(Document).where(
-            Document.id == body.document_id, Document.tenant_id == p.tenant_id,
-            Document.version == DocumentVersion.version, Document.status != "deleted"
-        ))
+            Document.id == body.document_id, *document_access(p),
+            Document.version == DocumentVersion.version, Document.status == "ready",
+            DocumentVersion.status == "ready",
+        ).with_for_update(of=Document))
         if version is None:
             raise HTTPException(404, "current document version not found")
         chunk = db.scalar(select(Chunk).where(
@@ -1385,6 +1580,13 @@ def update_entity_alias(alias_id: str, body: EntityAliasStatusRequest,
                         p: Principal = Depends(principal_from_session)):
     require_admin(p)
     with SessionLocal() as db:
+        version = db.scalar(select(DocumentVersion).join(Document).join(
+            EntityAlias, EntityAlias.document_version_id == DocumentVersion.id
+        ).where(EntityAlias.id == alias_id, *document_access(p),
+                Document.version == DocumentVersion.version, Document.status == "ready",
+                DocumentVersion.status == "ready").with_for_update(of=Document))
+        if version is None:
+            raise HTTPException(404, "current document version not found")
         item = db.scalar(select(EntityAlias).where(EntityAlias.id == alias_id, EntityAlias.tenant_id == p.tenant_id))
         if item is None:
             raise HTTPException(404, "entity alias not found")
@@ -1392,6 +1594,6 @@ def update_entity_alias(alias_id: str, body: EntityAliasStatusRequest,
         item.approved_by = p.subject if body.status == "approved" else None
         item.approved_at = datetime.now(UTC).replace(tzinfo=None) if body.status == "approved" else None
         audit(db, p, f"entity_alias.{body.status}", "entity_alias", item.id, "accepted")
+        bump_knowledge_revision(p.tenant_id, db)
         db.commit()
-    bump_knowledge_revision(p.tenant_id)
     return {"id": alias_id, "status": body.status}
