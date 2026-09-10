@@ -31,16 +31,15 @@ class Settings(BaseSettings):
     service_requests_per_minute: int = Field(default=60, ge=1)
     jwt_secret: str
     jwt_algorithm: str = "HS256"
-    # Browser authentication is opt-in locally and enabled with AUTH_MODE=oidc
-    # in deployed environments. API callers in jwt mode retain the bootstrap
-    # token path used by the existing local tests.
-    auth_mode: str = "jwt"
+    # Local credentials are the default; OIDC and the legacy JWT path are
+    # explicit deployment/test choices.
+    auth_mode: str = "local"
     identity_issuer: str = "https://idp.snnc.cc/realms/openidentity"
     identity_client_id: str = "sn-knowledge"
     identity_client_secret: str | None = None
     identity_redirect_uri: str = "http://127.0.0.1:8000/auth/callback"
     identity_post_logout_redirect_uri: str | None = None
-    identity_scope: str = "openid profile email"
+    identity_scope: str = "openid profile"
     identity_default_tenant_id: str | None = None
     identity_session_secret: str | None = None
     identity_session_cookie: str = "sn_knowledge_session"
@@ -49,6 +48,7 @@ class Settings(BaseSettings):
     identity_http_timeout_seconds: float = 8.0
     local_admin_username: str | None = None
     local_admin_password: str | None = None
+    local_login_attempts_per_minute: int = Field(default=10, ge=1, le=100)
     brand_name: str = Field(default="Knowledge Workspace", min_length=1, max_length=80)
     brand_mark: str = Field(default="K", min_length=1, max_length=4)
     brand_tagline: str = Field(default="企业知识助手", max_length=120)
@@ -65,21 +65,40 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_oidc_runtime(self):
+        def has_placeholder(value: object) -> bool:
+            if not isinstance(value, str):
+                return False
+            lowered = value.lower()
+            return "replace_with" in lowered or "replace-with" in lowered
+
         if self.brand_logo_url and not self.brand_logo_url.startswith(("/", "https://", "http://")):
             raise ValueError("BRAND_LOGO_URL must be an absolute path or an HTTP(S) URL")
         auth_mode = self.auth_mode.lower()
-        if auth_mode not in {"dev", "jwt", "oidc"}:
-            raise ValueError("AUTH_MODE must be dev, jwt or oidc")
+        if auth_mode not in {"local", "dev", "jwt", "oidc"}:
+            raise ValueError("AUTH_MODE must be local, dev, jwt or oidc")
         if auth_mode != "dev" and len(self.jwt_secret) < 32:
             raise ValueError("JWT_SECRET must contain at least 32 characters outside development")
+        if auth_mode != "dev" and has_placeholder(self.jwt_secret):
+            raise ValueError("JWT_SECRET must replace the deployment placeholder")
         if auth_mode == "oidc":
             required = (self.identity_issuer, self.identity_client_id, self.identity_default_tenant_id,
                         self.identity_session_secret, self.identity_redirect_uri,
                         self.identity_post_logout_redirect_uri)
-            if any(not value or "REPLACE_WITH" in str(value) for value in required):
+            if any(not value or has_placeholder(value) for value in required):
                 raise ValueError("OIDC production settings require issuer, client, tenant, callback and session settings")
             if len(self.identity_session_secret) < 32 or not self.identity_cookie_secure:
                 raise ValueError("OIDC production requires a 32-character session secret and secure cookies")
+        elif auth_mode == "local" and self.identity_session_secret is not None and len(self.identity_session_secret) < 32:
+            raise ValueError("LOCAL identity session secret must contain at least 32 characters")
+        if auth_mode != "dev" and self.identity_session_secret is not None and has_placeholder(self.identity_session_secret):
+            raise ValueError("IDENTITY_SESSION_SECRET must replace the deployment placeholder")
+        if bool(self.local_admin_username) != bool(self.local_admin_password):
+            raise ValueError("LOCAL_ADMIN_USERNAME and LOCAL_ADMIN_PASSWORD must be configured together")
+        if self.local_admin_password and (
+            "replace_with" in self.local_admin_password.lower()
+            or "replace-with" in self.local_admin_password.lower()
+        ):
+            raise ValueError("LOCAL_ADMIN_PASSWORD must replace the deployment placeholder")
         return self
 
 settings = Settings()

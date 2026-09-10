@@ -11,19 +11,22 @@
   <main class="login-experience local-admin-experience">
     <section class="login-hero" aria-label="Local administrator">
       <a class="login-brand" href="/login"><span class="login-mark" id="brand-mark">K</span><span><b id="brand-name">Knowledge Workspace</b><small id="brand-tagline">企业知识助手</small></span></a>
-      <div class="login-copy"><p>INSTALLATION ACCESS</p><h1>本地初始化<br><em>管理员。</em></h1><span>仅用于配置 IdP 员工账号在本应用中的角色与启用状态。个人资料和密码不在此管理。</span></div>
+      <div class="login-copy"><p>LOCAL WORKSPACE ACCESS</p><h1>本地工作区<br><em>账号。</em></h1><span>管理员和普通本地账号都从这里安全登录。账号资料与密码由本应用管理，不经过企业身份提供商。</span></div>
       <div class="login-proof"><i></i><span>系统账户 · 单一账号 · 最小权限</span></div>
     </section>
     <section class="login-panel" aria-labelledby="admin-login-title">
-      <div class="login-panel-top"><span>LOCAL ADMIN</span><small>非员工登录入口</small></div>
-      <form class="login-card local-admin-form" action="/auth/local-admin/login" method="post">
+      <div class="login-panel-top"><span>LOCAL ACCOUNT</span><small>本地登录入口</small></div>
+      <form class="login-card local-admin-form" id="local-login-form" data-login-next="/admin/" data-submit-label="登录管理控制台" novalidate>
         <div class="login-card-icon" aria-hidden="true">⌘</div>
-        <p>受限访问</p><h1 id="admin-login-title">进入管理控制台</h1>
-        <span>凭据来自安装配置，不关联 IdP，也没有资料或密码管理页面。</span>
-        <label>用户名<input name="username" autocomplete="username" required maxlength="64"></label>
-        <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+        <p>本地账号</p><h1 id="admin-login-title">进入管理控制台</h1>
+        <span>初始管理员与普通本地用户使用同一安全入口；密码不会提交给 IdP。</span>
+        <div class="login-fields" id="local-login-fields" hidden>
+          <label>用户名<input name="username" autocomplete="username" minlength="1" maxlength="64" required></label>
+          <label>密码<input name="password" type="password" autocomplete="current-password" minlength="16" maxlength="4096" required></label>
+        </div>
+        <div class="login-error" id="login-error" role="alert" aria-live="assertive" hidden></div>
         <input type="hidden" name="next" value="/admin/">
-        <button class="login-button" type="submit">登录管理控制台 <b aria-hidden="true">→</b></button>
+        <button class="login-button" id="local-login-submit" type="submit" hidden>登录管理控制台 <b aria-hidden="true">→</b></button>
         <a class="local-admin-link" href="/login">返回企业登录</a>
       </form>
       <footer><span>Evidence first</span><i></i><span>Designed for clarity</span></footer>

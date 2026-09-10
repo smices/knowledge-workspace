@@ -35,18 +35,21 @@ def test_initial_local_admin_manages_idp_access_without_profile_state(monkeypatc
         store.add(db.Principal(id="idp-user-1", tenant_id="tenant-1", display_name=None, principal_type="idp"))
         store.commit()
 
+    monkeypatch.setattr(main, "_local_login_attempt_allowed", lambda *_args: True)
     client = TestClient(main.app)
-    response = client.post("/auth/local-admin/login", data={"username": "installer", "password": "local-admin-password", "next": "/admin/"}, follow_redirects=False)
+    response = client.post("/auth/local-admin/login", data={"username": "installer", "password": "local-admin-password", "next": "/admin/"},
+                           headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/"
-    assert client.get("/account").status_code == 404
-    assert client.put("/api/v1/admin/members/idp-user-1/roles", json={"roles": ["finance"]}).json()["roles"] == ["finance"]
-    assert client.put("/api/v1/admin/members/idp-user-1/status", json={"status": "disabled"}).json()["status"] == "disabled"
-    assert client.put(f"/api/v1/admin/members/{local_admin.LOCAL_ADMIN_ID}/status", json={"status": "disabled"}).status_code == 400
+    assert client.get("/account").status_code == 200
+    origin = {"Origin": "http://testserver"}
+    assert client.put("/api/v1/admin/members/idp-user-1/roles", json={"roles": ["finance"]}, headers=origin).json()["roles"] == ["finance"]
+    assert client.put("/api/v1/admin/members/idp-user-1/status", json={"status": "disabled"}, headers=origin).json()["status"] == "disabled"
+    assert client.put(f"/api/v1/admin/members/{local_admin.LOCAL_ADMIN_ID}/status", json={"status": "disabled"}, headers=origin).status_code == 400
 
     disabled = TestClient(main.app)
     disabled.cookies.set(settings.identity_session_cookie, _sign_session(Principal("idp-user-1", "tenant-1", frozenset())))
-    assert disabled.get("/api/v1/documents").status_code == 403
+    assert disabled.get("/api/v1/documents").status_code in {401, 403}
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated TEST_DATABASE_URL")

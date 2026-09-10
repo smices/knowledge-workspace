@@ -39,6 +39,7 @@ class Principal(Base):
     display_name: Mapped[str | None] = mapped_column(String(255))
     principal_type: Mapped[str] = mapped_column(String(32), default="user")
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    session_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -77,6 +78,17 @@ class LocalAdminCredential(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class LocalUserCredential(Base):
+    """Tenant-scoped ordinary local-user credentials."""
+    __tablename__ = "local_user_credentials"
+    principal_id: Mapped[str] = mapped_column(ForeignKey("principals.id"), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    username: Mapped[str] = mapped_column(String(64))
+    password_hash: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "username", name="uq_local_users_tenant_username"),)
 
 
 class KnowledgeBase(Base):
@@ -202,7 +214,7 @@ class AuditEvent(Base):
     subject: Mapped[str] = mapped_column(String(256), index=True)
     action: Mapped[str] = mapped_column(String(128), index=True)
     resource_type: Mapped[str] = mapped_column(String(128))
-    resource_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    resource_id: Mapped[str | None] = mapped_column(String(256), index=True)
     outcome: Mapped[str] = mapped_column(String(32))
     trace_id: Mapped[str | None] = mapped_column(String(64), index=True)
     details: Mapped[dict | None] = mapped_column(JSON)

@@ -34,6 +34,7 @@ class Principal:
     tenant_id: str
     roles: frozenset[str]
     source: str = "idp"
+    session_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -127,10 +128,14 @@ def browser_session_active(request: Request) -> bool:
     if settings.auth_mode.lower() == "dev":
         # ponytail: development-only marker; production always verifies a signed OIDC session.
         return hmac.compare_digest(value, "dev")
-    if settings.auth_mode.lower() != "oidc":
+    if settings.auth_mode.lower() not in {"local", "oidc"}:
         return False
     try:
-        _verify_session(value)
+        principal = _verify_session(value)
+        if principal.source == "service" or (
+                settings.auth_mode.lower() == "local" and principal.source != "local"):
+            return False
+        _database_principal(principal, provision=False, check_session=True)
     except HTTPException:
         return False
     return True
@@ -155,7 +160,8 @@ def _principal_from_claims(claims: dict[str, Any]) -> Principal:
     return Principal(subject=subject, tenant_id=tenant_id, roles=frozenset())
 
 
-def _database_principal(principal: Principal, *, provision: bool, service_only: bool = False) -> Principal:
+def _database_principal(principal: Principal, *, provision: bool, service_only: bool = False,
+                        check_session: bool = False) -> Principal:
     """Resolve current application access; bearer callers must already exist."""
     from app.db import Principal as DbPrincipal, PrincipalRole, Role, SessionLocal, Tenant
 
@@ -163,25 +169,19 @@ def _database_principal(principal: Principal, *, provision: bool, service_only: 
         with SessionLocal() as db:
             tenant = db.get(Tenant, principal.tenant_id)
             identity = db.get(DbPrincipal, principal.subject)
-            if provision:
-                if tenant is None:
-                    tenant = Tenant(id=principal.tenant_id, name=principal.tenant_id)
-                    db.add(tenant)
-                elif tenant.status != "active":
-                    raise HTTPException(403, "Application access is disabled")
-                if identity is None:
-                    if principal.source == "local":
-                        raise HTTPException(403, "Application access is disabled")
-                    identity = DbPrincipal(id=principal.subject, tenant_id=principal.tenant_id,
-                                           display_name=None, principal_type="idp")
-                    db.add(identity)
-                elif (identity.tenant_id != principal.tenant_id or identity.status != "active"
-                      or (identity.principal_type == "local_admin") != (principal.source == "local")):
-                    raise HTTPException(403, "Application access is disabled")
-                db.commit()
-            elif (tenant is None or tenant.status != "active" or identity is None
+            expected_types = {
+                "local": {"local_admin", "local_user"},
+                "idp": {"idp"},
+                "service": {"service_account"},
+            }.get(principal.source)
+            if (check_session and principal.source in {"local", "idp"} and identity is not None
+                    and identity.session_version != principal.session_version):
+                raise HTTPException(401, "Session expired")
+            if (not expected_types or tenant is None or tenant.status != "active" or identity is None
                   or identity.tenant_id != principal.tenant_id or identity.status != "active"
-                  or (identity.principal_type == "local_admin") != (principal.source == "local")
+                  or identity.principal_type not in expected_types
+                  or (check_session and principal.source in {"local", "idp"}
+                      and identity.session_version != principal.session_version)
                   or (service_only and identity.principal_type != "service_account")):
                 raise HTTPException(403, "Application access is not provisioned")
             role_names = db.scalars(
@@ -192,7 +192,8 @@ def _database_principal(principal: Principal, *, provision: bool, service_only: 
                     Role.tenant_id == principal.tenant_id,
                 )
             ).all()
-        return Principal(principal.subject, principal.tenant_id, frozenset(role_names), principal.source)
+        return Principal(principal.subject, principal.tenant_id, frozenset(role_names), principal.source,
+                         session_version=identity.session_version)
     except HTTPException:
         raise
     except Exception as exc:
@@ -206,6 +207,7 @@ def _sign_session(principal: Principal, now: int | None = None) -> str:
         "tenant_id": principal.tenant_id,
         "roles": sorted(principal.roles),
         "source": principal.source,
+        "session_version": principal.session_version,
         "iat": issued,
         "exp": issued + settings.identity_session_max_seconds,
     }
@@ -223,11 +225,18 @@ def _verify_session(value: str) -> Principal:
         payload = json.loads(_unb64(encoded))
         if int(payload["exp"]) <= int(time.time()):
             raise ValueError("expired session")
+        source = str(payload["source"])
+        if source not in {"local", "idp", "service"}:
+            raise ValueError("invalid session source")
+        session_version = int(payload["session_version"])
+        if session_version < 0:
+            raise ValueError("invalid session version")
         return Principal(
             subject=str(payload["sub"]),
             tenant_id=str(payload["tenant_id"]),
             roles=frozenset(str(role) for role in payload.get("roles", [])),
-            source=str(payload.get("source", "idp")),
+            source=source,
+            session_version=session_version,
         )
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise HTTPException(401, "Invalid session") from exc
@@ -243,7 +252,7 @@ def principal_from_token(authorization: str | None = Header(default=None)) -> Pr
         roles = frozenset(claims.get("roles", []))
         if not tenant_id or not subject:
             raise ValueError
-        return Principal(subject, tenant_id, roles)
+        return Principal(subject, tenant_id, roles, source="service")
     except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
         raise HTTPException(401, "Invalid token") from exc
 
@@ -278,22 +287,28 @@ def principal_from_oidc_token(authorization: str | None = Header(default=None)) 
 def principal_from_session(
     request: Request, authorization: str | None = Header(default=None)
 ) -> Principal:
+    mode = settings.auth_mode.lower()
     if authorization is not None:
-        if settings.auth_mode.lower() == "oidc":
+        if mode == "oidc":
             return principal_from_oidc_token(authorization)
-        if settings.auth_mode.lower() == "jwt":
+        if mode == "jwt":
             return principal_from_token(authorization)
         raise HTTPException(401, "Bearer authentication is disabled")
-    if settings.auth_mode.lower() == "dev":
+    if mode == "dev":
         # ponytail: local-only bypass; never enable AUTH_MODE=dev in IDC.
         return Principal("local-admin", "tenant-local", frozenset({"admin", "finance"}))
     session = request.cookies.get(settings.identity_session_cookie)
     if session:
+        if mode == "jwt":
+            raise HTTPException(403, "browser sessions are disabled")
         principal = _verify_session(session)
+        if principal.source == "service" or (
+                mode == "local" and principal.source != "local"):
+            raise HTTPException(403, "browser session source is disabled")
         # IdP identity is authentication only. Resolve business roles from the
         # application's own database so an IdP claim can never elevate access.
-        return _database_principal(principal, provision=True)
-    if settings.auth_mode.lower() == "jwt":
+        return _database_principal(principal, provision=False, check_session=True)
+    if mode == "jwt":
         return principal_from_token(authorization)
     raise HTTPException(401, "OIDC login required")
 

@@ -2,6 +2,7 @@
 
 ## 使用与运维
 
+- [未完成任务与交付记录](implementation-backlog.md)：功能差距、阶段状态和验收边界。
 - [部署与运行](../deploy/README.md)：本机源码、Docker Compose、Kubernetes、品牌配置和上线检查。
 - [OpenIdentity 集成](oidc-integration.md)：OIDC 登录、回跳、会话和生产配置。
 - [数据库迁移](database-migrations.md)：Alembic 迁移命令与约束。

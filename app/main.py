@@ -12,15 +12,18 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
 from time import perf_counter
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from fastapi import Depends, File, Form, FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAI
 from qdrant_client import models
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import (
@@ -67,10 +70,14 @@ from app.db import (
     Role,
     SessionLocal,
     Tenant,
+    LocalAdminCredential,
+    LocalUserCredential,
     engine,
     init_db,
 )
-from app.local_admin import authenticate_local_admin, ensure_local_admin
+from app.local_admin import (LOCAL_ADMIN_PASSWORD_MAX_LENGTH, authenticate_local,
+                             authenticate_local_admin, ensure_local_admin, hash_password,
+                             normalize_username, validate_password, verify_password)
 from app.events import enqueue_document
 from app.storage import MAX_UPLOAD_BYTES, delete_file, file_exists, put_file, read_upload
 from app.vector import (VersionScopeOverflow, _focus_parts, async_client as async_vector_client, client as vector_client,
@@ -87,7 +94,7 @@ CACHE_CONTRACT_VERSION = "direct-evidence-v5"
 async def lifespan(app: FastAPI):
     if settings.auth_mode.lower() == "dev":
         init_db()
-    if settings.auth_mode.lower() == "oidc" or settings.local_admin_username or settings.local_admin_password:
+    if settings.auth_mode.lower() in {"local", "oidc"} and (settings.local_admin_username or settings.local_admin_password):
         ensure_local_admin()
     ensure_collection()
     try:
@@ -129,9 +136,42 @@ class RequestMetrics:
 app.add_middleware(RequestMetrics)
 
 
+@app.middleware("http")
+async def admin_page_gate(request: Request, call_next):
+    path = request.url.path
+    is_admin_html = path == "/admin" or path == "/admin/" or (
+        path.startswith("/admin/") and not Path(path).suffix
+    ) or "text/html" in request.headers.get("accept", "")
+    if is_admin_html and (path == "/admin" or path.startswith("/admin/")):
+        if not browser_session_active(request):
+            # A stale or wrong-source cookie is an authenticated browser
+            # attempt, not an anonymous visit.  Do not turn it into a login
+            # redirect that could hide a local/IdP mode boundary failure.
+            if request.cookies.get(settings.identity_session_cookie):
+                return Response("admin role required", status_code=403)
+            return RedirectResponse("/login", status_code=303)
+        try:
+            principal = principal_from_session(request, None)
+            require_admin(principal)
+        except HTTPException as exc:
+            if exc.status_code in {401, 403}:
+                return Response("admin role required", status_code=403)
+            raise
+    return await call_next(request)
+
+
 @app.exception_handler(VersionScopeOverflow)
 async def version_scope_overflow(_request, _error):
     return JSONResponse(status_code=503, content={"detail": "Document scope exceeds retrieval capacity"})
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(_request, error: RequestValidationError):
+    # Never serialize ``input``/``ctx``: authentication validation inputs may
+    # contain a password or another credential supplied in the request body.
+    detail = [{"loc": item.get("loc", ()), "type": item.get("type", "value_error"),
+               "msg": item.get("msg", "invalid value")} for item in error.errors()]
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 
 @app.get("/brand.js", include_in_schema=False)
@@ -184,15 +224,47 @@ class FeedbackRequest(BaseModel):
 
 
 class RoleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9:_-]+$")
 
 
 class MemberRolesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     roles: set[str] = Field(default_factory=set)
 
 
 class MemberStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     status: Literal["active", "disabled"]
+
+
+class MemberCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["local", "idp"]
+    username: str | None = None
+    password: str | None = None
+    subject: str | None = None
+    roles: set[str] = Field(default_factory=set)
+
+    @model_validator(mode="after")
+    def validate_source_fields(self):
+        if self.source == "local":
+            if self.username is None or self.password is None or self.subject is not None:
+                raise ValueError("local members require username and password only")
+        elif self.subject is None or self.username is not None or self.password is not None:
+            raise ValueError("idp members require subject and roles only")
+        return self
+
+
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_password: str
+
+
+class AccountPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_password: str
+    new_password: str
 
 
 class EntityAliasRequest(BaseModel):
@@ -211,6 +283,61 @@ def hmac_compare(left: str, right: str) -> bool:
     return bool(left) and hmac.compare_digest(left, right)
 
 
+def require_same_origin(request: Request) -> None:
+    """Require a browser write to carry a same-origin Origin or Referer."""
+    values = [request.headers.get("origin"), request.headers.get("referer")]
+    candidates = [value for value in values if value]
+    if not candidates:
+        raise HTTPException(403, "same-origin request required")
+    request_origin = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+    configured = urlparse(settings.identity_redirect_uri)
+    configured_origin = (f"{configured.scheme}://{configured.netloc}".rstrip("/")
+                         if configured.scheme and configured.netloc else "")
+    allowed = {configured_origin}
+    # Test/local loopback hosts are intentionally allowed to use their request
+    # origin; deployed origins remain pinned to the configured redirect URI.
+    if request.url.hostname in {"localhost", "127.0.0.1", "::1", "testserver"}:
+        allowed.add(request_origin)
+    parsed = []
+    for value in candidates:
+        try:
+            item = urlparse(value)
+            if item.scheme not in {"http", "https"} or not item.netloc:
+                raise ValueError
+            if value == request.headers.get("origin") and (item.path not in {"", "/"}
+                                                             or item.query or item.fragment):
+                raise ValueError
+            parsed.append(f"{item.scheme}://{item.netloc}".rstrip("/"))
+        except ValueError as exc:
+            raise HTTPException(403, "same-origin request required") from exc
+    if any(origin not in allowed for origin in parsed) or len(set(parsed)) != 1:
+        raise HTTPException(403, "same-origin request required")
+
+
+def _local_login_attempt_allowed(request: Request, username: str) -> bool:
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        normalized = normalize_username(username)
+    except ValueError:
+        normalized = username.strip().casefold()[:64]
+    tenant_id = settings.identity_default_tenant_id or "tenant-local"
+    ip_key = "auth:local-login:ip:" + sha256(client_ip.encode()).hexdigest()
+    user_key = "auth:local-login:user:" + sha256(f"{tenant_id}|{normalized}".encode()).hexdigest()
+    script = """
+    local ip_count = redis.call('INCR', KEYS[1])
+    local user_count = redis.call('INCR', KEYS[2])
+    if ip_count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+    if user_count == 1 then redis.call('EXPIRE', KEYS[2], ARGV[1]) end
+    return {ip_count, user_count}
+    """
+    try:
+        counts = cache.eval(script, 2, ip_key, user_key, 60)
+        count = max(int(counts[0]), int(counts[1]))
+    except Exception as exc:
+        raise HTTPException(503, "authentication rate limiter unavailable") from exc
+    return count <= settings.local_login_attempts_per_minute
+
+
 def ensure_principal(db, principal: Principal) -> list[Role]:
     tenant = db.get(Tenant, principal.tenant_id)
     if tenant is None:
@@ -221,10 +348,10 @@ def ensure_principal(db, principal: Principal) -> list[Role]:
         db.add(DbPrincipal(id=principal.subject, tenant_id=principal.tenant_id))
     roles = []
     for role_name in principal.roles:
-        role_id = f"{principal.tenant_id}:{role_name}"
-        role = db.get(Role, role_id)
+        role = db.scalar(select(Role).where(Role.tenant_id == principal.tenant_id,
+                                            Role.name == role_name))
         if role is None:
-            role = Role(id=role_id, tenant_id=principal.tenant_id, name=role_name)
+            role = Role(id=str(uuid4()), tenant_id=principal.tenant_id, name=role_name)
             db.add(role)
         roles.append(role)
     db.flush()
@@ -592,6 +719,16 @@ def live():
     return {"status": "ok"}
 
 
+@app.get("/auth/options")
+def auth_options():
+    mode = settings.auth_mode.lower()
+    return {
+        "local_login": mode in {"local", "oidc"},
+        "idp_login": mode == "oidc",
+        "registration_open": False,
+    }
+
+
 @app.get("/auth/login", include_in_schema=False)
 def login(next: str = Query(default="/home")):
     destination = safe_next_path(next)
@@ -607,6 +744,8 @@ def login(next: str = Query(default="/home")):
             path="/",
         )
         return response
+    if settings.auth_mode.lower() == "local":
+        return RedirectResponse("/login", status_code=303)
     if settings.auth_mode.lower() != "oidc":
         raise HTTPException(503, "browser login requires AUTH_MODE=oidc or dev")
     authorization_url, state, nonce, verifier = authorization_request()
@@ -620,11 +759,18 @@ def login(next: str = Query(default="/home")):
     return response
 
 
+@app.post("/auth/local/login", include_in_schema=False)
 @app.post("/auth/local-admin/login", include_in_schema=False)
-def local_admin_login(username: str = Form(...), password: str = Form(...), next: str = Form(default="/admin/")):
-    principal = authenticate_local_admin(username, password)
+def local_login(request: Request, username: str = Form(...), password: str = Form(...),
+                next: str = Form(default="/home")):
+    if settings.auth_mode.lower() not in {"local", "oidc"}:
+        raise HTTPException(503, "local login is disabled")
+    require_same_origin(request)
+    if not _local_login_attempt_allowed(request, username):
+        raise HTTPException(429, "too many login attempts", headers={"Retry-After": "60"})
+    principal = authenticate_local(username, password, settings.identity_default_tenant_id or "tenant-local")
     if principal is None:
-        raise HTTPException(401, "Invalid local administrator credentials")
+        raise HTTPException(401, "Invalid local credentials")
     response = RedirectResponse(safe_next_path(next), status_code=303)
     response.set_cookie(settings.identity_session_cookie, _sign_session(principal), httponly=True,
                         secure=settings.identity_cookie_secure, samesite="lax",
@@ -633,8 +779,10 @@ def local_admin_login(username: str = Form(...), password: str = Form(...), next
 
 
 @app.get("/auth/callback", include_in_schema=False)
-def callback(request, code: str | None = None, state: str | None = None,
+def callback(request: Request, code: str | None = None, state: str | None = None,
              error: str | None = None, error_description: str | None = None):
+    if settings.auth_mode.lower() != "oidc":
+        raise HTTPException(404, "OIDC login is disabled")
     if error:
         raise HTTPException(401, error_description or "OIDC login denied")
     if not code or not state or not hmac_compare(state, request.cookies.get("oi_oidc_state", "")):
@@ -644,6 +792,8 @@ def callback(request, code: str | None = None, state: str | None = None,
         raise HTTPException(400, "OIDC login has expired")
     try:
         principal = exchange_code(code, verifier, nonce)
+        from app.auth import _database_principal
+        principal = _database_principal(principal, provision=False)
     except HTTPException:
         raise
     except Exception as exc:
@@ -672,8 +822,25 @@ def logout():
 @app.get("/account", include_in_schema=False)
 def account(p: Principal = Depends(principal_from_session)):
     if p.source == "local":
-        raise HTTPException(404, "local administrator has no profile")
+        if not Path("web/account.html").exists():
+            return Response(status_code=404)
+        return FileResponse("web/account.html")
     return RedirectResponse(identity_account_url(), status_code=303)
+
+
+@app.get("/api/v1/account")
+def account_data(p: Principal = Depends(principal_from_session)):
+    with SessionLocal() as db:
+        identity = db.get(DbPrincipal, p.subject)
+        username = None
+        if identity is not None and identity.principal_type == "local_admin":
+            credential = db.scalar(select(LocalAdminCredential).where(LocalAdminCredential.principal_id == p.subject))
+            username = credential.username if credential else None
+        elif identity is not None and identity.principal_type == "local_user":
+            credential = db.scalar(select(LocalUserCredential).where(LocalUserCredential.principal_id == p.subject))
+            username = credential.username if credential else None
+        return {"subject": p.subject, "source": p.source, "username": username,
+                "roles": sorted(p.roles)}
 
 
 SUPPORTED_UPLOAD_TYPES = {
@@ -759,7 +926,7 @@ def _persist_upload(p, filename, content_type, raw, roles, knowledge_base_name):
         for role_name in roles:
             role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == role_name))
             if role is None:
-                role = Role(id=f"{p.tenant_id}:{role_name}", tenant_id=p.tenant_id, name=role_name)
+                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=role_name)
                 db.add(role)
                 db.flush()
             db.add(DocumentGrant(document_id=document_id, role_id=role.id))
@@ -1009,9 +1176,16 @@ def _feedback_token(answer_id: str, p: Principal) -> str:
 
 def validate_query_result(p: Principal, revision: int, result: dict) -> None:
     """Caches and slow generation cannot bypass current document authorization."""
-    if settings.auth_mode.lower() == "oidc":
+    mode = settings.auth_mode.lower()
+    revalidate = ((mode == "local" and p.source == "local")
+                  or (mode == "oidc" and p.source in {"local", "idp", "service"})
+                  or (mode == "jwt" and p.source == "service"))
+    if revalidate:
         from app.auth import _database_principal
-        current = _database_principal(p, provision=False, service_only=p.source == "service")
+        current = _database_principal(
+            p, provision=False, service_only=p.source == "service",
+            check_session=p.source in {"local", "idp"},
+        )
         if current.roles != p.roles:
             raise HTTPException(409, "Access changed; retry the query")
     # Unrelated ingestion must not starve long answers. Cache writes retain
@@ -1267,10 +1441,77 @@ def create_role(body: RoleRequest, p: Principal = Depends(principal_from_session
         ensure_principal(db, p)
         role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == body.name))
         if role is None:
-            role = Role(id=f"{p.tenant_id}:{body.name}", tenant_id=p.tenant_id, name=body.name)
+            role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=body.name)
             db.add(role)
             db.commit()
         return {"id": role.id, "name": role.name}
+
+
+def _validated_roles(roles: set[str]) -> set[str]:
+    values = {name.strip() for name in roles if isinstance(name, str) and name.strip()}
+    if any(not re.fullmatch(r"[a-zA-Z0-9:_-]{1,128}", name) for name in values):
+        raise HTTPException(422, "invalid role name")
+    return values
+
+
+@app.post("/api/v1/admin/members", status_code=201)
+def create_member(request: Request, body: MemberCreateRequest,
+                  p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    require_same_origin(request)
+    roles = _validated_roles(body.roles)
+    with SessionLocal() as db:
+        tenant = db.get(Tenant, p.tenant_id)
+        if tenant is None or tenant.status != "active":
+            raise HTTPException(403, "tenant is disabled")
+        if body.source == "local":
+            try:
+                username = normalize_username(body.username or "")
+                password = validate_password(body.password or "")
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if db.scalar(select(LocalAdminCredential).where(LocalAdminCredential.username == username)) is not None:
+                raise HTTPException(409, "username already exists")
+            if db.scalar(select(LocalUserCredential).where(
+                    LocalUserCredential.tenant_id == p.tenant_id,
+                    LocalUserCredential.username == username)) is not None:
+                raise HTTPException(409, "username already exists")
+            subject = f"local:user:{uuid4()}"
+            member = DbPrincipal(id=subject, tenant_id=p.tenant_id, display_name=username,
+                                 principal_type="local_user")
+            db.add(member)
+            db.flush()
+            db.add(LocalUserCredential(principal_id=subject, tenant_id=p.tenant_id,
+                                       username=username, password_hash=hash_password(password)))
+        else:
+            subject = (body.subject or "").strip()
+            if not subject or len(subject) > 256:
+                raise HTTPException(422, "invalid IdP subject")
+            member = db.get(DbPrincipal, subject)
+            if member is not None:
+                if member.tenant_id != p.tenant_id or member.principal_type != "idp":
+                    raise HTTPException(409, "member belongs to another source or tenant")
+                if member.status != "active":
+                    raise HTTPException(409, "member is disabled")
+            else:
+                member = DbPrincipal(id=subject, tenant_id=p.tenant_id, display_name=None,
+                                     principal_type="idp")
+                db.add(member)
+                db.flush()
+        for name in roles:
+            role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
+            if role is None:
+                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=name)
+                db.add(role)
+                db.flush()
+            db.add(PrincipalRole(principal_id=member.id, role_id=role.id))
+        audit(db, p, "member.create", "principal", member.id, "accepted")
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(409, "member already exists") from exc
+        return {"subject": member.id, "source": body.source, "roles": sorted(roles)}
 
 
 @app.get("/api/v1/admin/members")
@@ -1285,9 +1526,20 @@ def list_members(p: Principal = Depends(principal_from_session)):
         roles_by_subject: dict[str, list[str]] = {}
         for subject, name in assignments:
             roles_by_subject.setdefault(subject, []).append(name)
+        usernames = {}
+        for credential in db.scalars(select(LocalAdminCredential).where(
+                LocalAdminCredential.principal_id.in_([member.id for member in members]))).all():
+            usernames[credential.principal_id] = credential.username
+        for credential in db.scalars(select(LocalUserCredential).where(
+                LocalUserCredential.principal_id.in_([member.id for member in members]))).all():
+            usernames[credential.principal_id] = credential.username
+        source_names = {"local_admin": "local", "local_user": "local", "idp": "idp",
+                        "service_account": "service"}
         return {"items": [{
             "subject": member.id,
-            "source": "local" if member.principal_type == "local_admin" else "idp",
+            "source": source_names.get(member.principal_type, member.principal_type),
+            "username": usernames.get(member.id),
+            "display_name": member.display_name,
             "status": member.status,
             "roles": sorted(roles_by_subject.get(member.id, [])),
             "initial_local_admin": member.principal_type == "local_admin",
@@ -1298,7 +1550,7 @@ def list_members(p: Principal = Depends(principal_from_session)):
 def managed_idp_member(db, principal: Principal, subject: str) -> DbPrincipal:
     member = db.scalar(select(DbPrincipal).where(
         DbPrincipal.id == subject, DbPrincipal.tenant_id == principal.tenant_id
-    ))
+    ).with_for_update())
     if member is None:
         raise HTTPException(404, "member not found")
     if member.principal_type == "local_admin":
@@ -1309,11 +1561,11 @@ def managed_idp_member(db, principal: Principal, subject: str) -> DbPrincipal:
 
 
 @app.put("/api/v1/admin/members/{subject}/roles")
-def update_member_roles(subject: str, body: MemberRolesRequest, p: Principal = Depends(principal_from_session)):
+def update_member_roles(request: Request, subject: str, body: MemberRolesRequest,
+                        p: Principal = Depends(principal_from_session)):
     require_admin(p)
-    roles = {name.strip() for name in body.roles if name.strip()}
-    if any(not re.fullmatch(r"[a-zA-Z0-9:_-]{1,128}", name) for name in roles):
-        raise HTTPException(422, "invalid role name")
+    require_same_origin(request)
+    roles = _validated_roles(body.roles)
     with SessionLocal() as db:
         member = managed_idp_member(db, p, subject)
         existing = db.scalars(select(PrincipalRole).join(Role, Role.id == PrincipalRole.role_id).where(
@@ -1324,7 +1576,7 @@ def update_member_roles(subject: str, body: MemberRolesRequest, p: Principal = D
         for name in roles:
             role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
             if role is None:
-                role = Role(id=f"{p.tenant_id}:{name}", tenant_id=p.tenant_id, name=name)
+                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=name)
                 db.add(role)
                 db.flush()
             db.add(PrincipalRole(principal_id=member.id, role_id=role.id))
@@ -1334,14 +1586,81 @@ def update_member_roles(subject: str, body: MemberRolesRequest, p: Principal = D
 
 
 @app.put("/api/v1/admin/members/{subject}/status")
-def update_member_status(subject: str, body: MemberStatusRequest, p: Principal = Depends(principal_from_session)):
+def update_member_status(request: Request, subject: str, body: MemberStatusRequest,
+                         p: Principal = Depends(principal_from_session)):
     require_admin(p)
+    require_same_origin(request)
     with SessionLocal() as db:
         member = managed_idp_member(db, p, subject)
         member.status = body.status
+        member.session_version += 1
         audit(db, p, "member.status.update", "principal", member.id, "accepted")
         db.commit()
     return {"subject": subject, "status": body.status}
+
+
+@app.post("/api/v1/admin/members/{subject}/password")
+def reset_member_password(request: Request, subject: str, body: PasswordResetRequest,
+                          p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    require_same_origin(request)
+    try:
+        password = validate_password(body.new_password)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    with SessionLocal() as db:
+        member = managed_idp_member(db, p, subject)
+        if member.principal_type != "local_user":
+            raise HTTPException(400, "only ordinary local users have local passwords")
+        credential = db.scalar(select(LocalUserCredential).where(
+            LocalUserCredential.principal_id == subject
+        ).with_for_update())
+        if credential is None:
+            raise HTTPException(409, "local credential is missing")
+        credential.password_hash = hash_password(password)
+        member.session_version += 1
+        audit(db, p, "member.password.reset", "principal", member.id, "accepted")
+        db.commit()
+    return {"subject": subject, "reset": True}
+
+
+@app.post("/api/v1/account/password")
+def change_account_password(request: Request, body: AccountPasswordRequest,
+                            response: Response,
+                            p: Principal = Depends(principal_from_session)):
+    require_same_origin(request)
+    if p.source != "local":
+        raise HTTPException(400, "only local accounts have local passwords")
+    with SessionLocal() as db:
+        member = db.scalar(select(DbPrincipal).where(DbPrincipal.id == p.subject).with_for_update())
+        if member is None or member.status != "active" or member.principal_type not in {"local_admin", "local_user"}:
+            raise HTTPException(403, "local account is unavailable")
+        if member.session_version != p.session_version:
+            raise HTTPException(401, "Session expired")
+        if member.principal_type == "local_admin":
+            credential = db.scalar(select(LocalAdminCredential).where(
+                LocalAdminCredential.principal_id == p.subject
+            ).with_for_update())
+        else:
+            credential = db.scalar(select(LocalUserCredential).where(
+                LocalUserCredential.principal_id == p.subject
+            ).with_for_update())
+        current_password_max_length = (LOCAL_ADMIN_PASSWORD_MAX_LENGTH
+                                       if member.principal_type == "local_admin" else 128)
+        try:
+            new_password = validate_password(body.new_password)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if (credential is None or not isinstance(body.current_password, str)
+                or not 16 <= len(body.current_password) <= current_password_max_length
+                or not verify_password(body.current_password, credential.password_hash)):
+            raise HTTPException(401, "invalid current password")
+        credential.password_hash = hash_password(new_password)
+        member.session_version += 1
+        audit(db, p, "account.password.change", "principal", member.id, "accepted")
+        db.commit()
+    response.delete_cookie(settings.identity_session_cookie, path="/")
+    return {"ok": True, "reauthenticate": True}
 
 
 @app.get("/api/v1/admin/stats")

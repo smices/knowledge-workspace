@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f7f8fb">
+  <title>Knowledge Workspace · 账户</title>
+  <link rel="stylesheet" href="/assets/login.css?v=20260820-account">
+</head>
+<body>
+  <main class="account-shell">
+    <a class="login-brand account-brand" href="/home"><span class="login-mark" id="brand-mark">K</span><span><b id="brand-name">Knowledge Workspace</b><small id="brand-tagline">企业知识助手</small></span></a>
+    <section class="account-card" aria-labelledby="account-title">
+      <div class="login-card-icon" aria-hidden="true">⌘</div>
+      <p class="account-kicker">LOCAL ACCOUNT</p>
+      <h1 id="account-title">账户与密码</h1>
+      <p class="account-description">查看当前本地账号，并更新仅由本应用管理的密码。</p>
+      <div class="account-identity" id="account-identity" aria-live="polite"><span>正在加载账户信息…</span></div>
+      <form id="password-form" novalidate hidden>
+        <label>当前密码<input name="current_password" type="password" autocomplete="current-password" minlength="16" maxlength="4096" required></label>
+        <label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="16" maxlength="128" required></label>
+        <small class="account-help">密码长度 16–128 个字符。请勿重复使用其他服务的密码。</small>
+        <div class="login-error" id="account-error" role="alert" aria-live="assertive" hidden></div>
+        <div class="account-actions"><button class="login-button" id="password-submit" type="submit">更新密码 <b aria-hidden="true">→</b></button><a class="account-back" href="/home">返回工作台</a></div>
+      </form>
+      <div class="account-success" id="account-success" role="status" hidden></div>
+    </section>
+  </main>
+  <script src="/brand.js"></script>
+  <script src="/assets/account.js?v=20260820-account"></script>
+</body>
+</html>

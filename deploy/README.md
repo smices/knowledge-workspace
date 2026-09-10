@@ -27,7 +27,7 @@ npm --prefix admin run build
 deploy/appctl init-source
 ```
 
-编辑 `deploy/.env.local`，替换所有占位值。然后启动基础服务、API 和 Worker：
+编辑 `deploy/.env.local`，替换所有占位值，尤其首次安装的 `LOCAL_ADMIN_USERNAME` / `LOCAL_ADMIN_PASSWORD`。模板默认 `AUTH_MODE=local`，先用初始化管理员登录，再由管理员添加用户；没有公开注册入口。然后启动基础服务、API 和 Worker：
 
 ```bash
 deploy/appctl infra-up
@@ -84,8 +84,9 @@ deploy/appctl k8s-apply
 ## 上线检查
 
 - 不提交 `deploy/.env.local` 或 `deploy/k8s/*.local.yaml`。
-- `AUTH_MODE=oidc` 时使用至少 32 字符的会话密钥并保持 `IDENTITY_COOKIE_SECURE=true`。
-- 首次 OIDC 安装还必须在 Secret 中配置 `LOCAL_ADMIN_PASSWORD`，并在 ConfigMap 中配置 `LOCAL_ADMIN_USERNAME`。该唯一系统账号仅用于进入 `/login/admin` 分配 IdP 员工账号的应用权限；不要将其作为员工账号或 IdP 账号管理。
+- 正式用户环境选择 `AUTH_MODE=local` 或 `oidc`，不使用 dev/jwt。使用至少 32 字符的会话密钥，HTTPS 部署保持 `IDENTITY_COOKIE_SECURE=true`；已有环境文件不会被模板升级自动覆盖。
+- 首次 local/OIDC 安装必须在 Secret 中配置 `LOCAL_ADMIN_PASSWORD`，并配置 `LOCAL_ADMIN_USERNAME`。之后修改环境变量不会重置既有管理员密码。初始化管理员可管理应用用户，但不代表任何 IdP 企业身份。
+- OIDC Client 的 callback 与公开 origin 必须匹配实际反向代理入口；预准入 IdP subject 后才能登录。不要为了跨站请求通过而关闭同源防护。
 - Kubernetes 镜像使用不可变 tag 或 digest，不使用 `latest`。
 - 部署后检查 `/live`、`/health`、`/`、`/login`、`/home`、`/admin/` 和 `/brand.js`。
 - 分别验证登录、会话过期、401、403、退出和回跳路径。

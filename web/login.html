@@ -23,15 +23,21 @@
 
     <section class="login-panel" aria-labelledby="login-title">
       <div class="login-panel-top"><span>WORKSPACE ACCESS</span><small>安全登录</small></div>
-      <div class="login-card">
+      <form class="login-card local-login-form" id="local-login-form" data-login-next="/home" data-submit-label="本地账号登录" novalidate>
         <div class="login-card-icon" aria-hidden="true">↗</div>
         <p>开始使用</p>
         <h1 id="login-title">进入你的知识工作台</h1>
-        <span>使用企业身份完成登录。我们不会在这里收集或保存你的登录信息。</span>
-        <a class="login-button" href="/auth/login?next=/home">继续登录 <b aria-hidden="true">→</b></a>
+        <span id="login-description">使用你的本地工作区账号登录。我们不会在这里收集或保存企业身份提供商密码。</span>
+        <div class="login-fields" id="local-login-fields" hidden>
+          <label>用户名<input name="username" autocomplete="username" minlength="1" maxlength="64" required></label>
+          <label>密码<input name="password" type="password" autocomplete="current-password" minlength="16" maxlength="4096" required></label>
+        </div>
+        <div class="login-error" id="login-error" role="alert" aria-live="assertive" hidden></div>
+        <button class="login-button" id="local-login-submit" type="submit" hidden>本地账号登录 <b aria-hidden="true">→</b></button>
+        <a class="login-button idp-login-button" id="idp-login" href="/auth/login?next=/home" hidden>企业身份登录 <b aria-hidden="true">→</b></a>
         <small class="login-note">登录即表示你仅访问获授权的资料。</small>
-        <a class="local-admin-link" href="/login/admin">本地初始化管理员</a>
-      </div>
+        <a class="local-admin-link" href="/login/admin">本地管理员入口</a>
+      </form>
       <footer><span>Evidence first</span><i></i><span>Designed for clarity</span></footer>
     </section>
   </main>

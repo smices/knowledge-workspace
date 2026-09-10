@@ -1,5 +1,9 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app import db
 from app.auth import Principal, _sign_session
 from app.config import settings
 from app.main import app
@@ -18,6 +22,14 @@ def test_root_routes_anonymous_browsers_to_login_and_removes_ui(monkeypatch):
 def test_authenticated_browser_reaches_home_with_one_status_label(monkeypatch):
     monkeypatch.setattr(settings, "auth_mode", "oidc")
     monkeypatch.setattr(settings, "identity_session_secret", "s" * 40)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    db.Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(db, "SessionLocal", session)
+    with session() as store:
+        store.add(db.Tenant(id="tenant-1", name="Tenant 1"))
+        store.add(db.Principal(id="user-1", tenant_id="tenant-1", principal_type="idp"))
+        store.commit()
     client = TestClient(app)
     client.cookies.set(settings.identity_session_cookie, _sign_session(Principal("user-1", "tenant-1", frozenset())))
 

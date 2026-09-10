@@ -20,7 +20,7 @@ data:
   IDENTITY_CLIENT_ID: REPLACE_WITH_CLIENT_ID
   IDENTITY_REDIRECT_URI: https://knowledge.example.invalid/auth/callback
   IDENTITY_POST_LOGOUT_REDIRECT_URI: https://knowledge.example.invalid/
-  IDENTITY_SCOPE: openid profile email
+  IDENTITY_SCOPE: openid profile
   IDENTITY_DEFAULT_TENANT_ID: REPLACE_WITH_TENANT_ID
   IDENTITY_SESSION_COOKIE: knowledge_session
   IDENTITY_COOKIE_SECURE: "true"

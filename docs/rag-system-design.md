@@ -83,7 +83,7 @@ API → 身份认证 → PostgreSQL 获取有效角色/权限
     → version-scoped entity-alias/evidence co-occurrence gate → LLM → answer + citations
 ```
 
-认证身份来自 IdP；应用角色、应用内启用状态和审计记录以 PostgreSQL 为事实源。首次 OIDC 安装创建唯一的本地初始化管理员，凭安装 Secret 登录，仅可配置 IdP 账号的应用权限，且不承载 IdP 资料或密码。
+身份可来自本地用户名密码或 IdP；应用角色、启用状态、会话版本和审计记录以 PostgreSQL 为事实源。首次 local/OIDC 安装创建唯一的本地初始化管理员，凭安装 Secret 登录。公开注册关闭，由管理员创建本地用户或预准入稳定 IdP subject；不收集 IdP 密码、不按邮箱合并账号。具体合同见 `docs/oidc-integration.md`。
 
 ## 4. 服务职责
 
@@ -336,7 +336,7 @@ GET    /health
 
 | 决策项 | 已确认方案 |
 |---|---|
-| 身份认证 | 生产使用 OpenIdentity OIDC Authorization Code + PKCE；服务端校验 issuer、audience、签名、nonce 和 claims 后建立短期 HttpOnly 会话，业务角色仍由本地 PostgreSQL 维护；JWT 仅保留给本地 API 开发模式 |
+| 身份认证 | 本地用户名密码 + OpenIdentity OIDC Authorization Code/PKCE；用户必须先准入并登录；关闭公开注册，管理员添加用户；本地密码哈希与 IdP 身份隔离，Cookie 校验数据库会话版本及当前角色；jwt/dev 仅供隔离开发 |
 | 文档权限 | 文档级 RBAC；第一阶段不引入目录或组织架构继承 |
 | 规模基线 | 单文件 ≤100MB；日增 ≤1万份；并发上传 ≤20 |
 | 性能目标 | 上传受理 ≤1秒；检索 P95 ≤500ms；问答首 token ≤2秒 |

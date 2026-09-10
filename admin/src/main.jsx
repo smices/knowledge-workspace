@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ProTable, StatisticCard } from '@ant-design/pro-components';
-import { Alert, Avatar, Badge, Button, Card, Descriptions, Input, List, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography, Upload, message } from 'antd';
-import { DatabaseOutlined, FileSearchOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
+import { Alert, Avatar, Badge, Button, Card, Descriptions, Form, Input, List, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography, Upload, message } from 'antd';
+import { DatabaseOutlined, FileSearchOutlined, ReloadOutlined, UserAddOutlined, WarningOutlined } from '@ant-design/icons';
 
 const api = async (url, options = {}) => {
-  const response = await fetch(url, { ...options, headers: { ...(options.headers || {}) } });
+  const response = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...(options.headers || {}) } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || `请求失败 ${response.status}`);
   return data;
@@ -143,22 +143,93 @@ function Logs() {
 
 function Members() {
   const t = useAdminLanguage();
+  const [feedback, contextHolder] = message.useMessage();
   const [data, setData] = useState({ items: [], roles: [] });
   const [editing, setEditing] = useState(null);
   const [roles, setRoles] = useState([]);
   const [loading, setLoading] = useState(false);
-  const load = async () => { setLoading(true); try { setData(await api('/api/v1/admin/members')); } catch (e) { message.error(e.message); } finally { setLoading(false); } };
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createSource, setCreateSource] = useState('local');
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [resetting, setResetting] = useState(null);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [createForm] = Form.useForm();
+  const [resetForm] = Form.useForm();
+  const usernamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+  const rolePattern = /^[A-Za-z0-9:_-]{1,128}$/;
+  const load = async () => { setLoading(true); try { setData(await api('/api/v1/admin/members')); } catch (e) { feedback.error(e.message); } finally { setLoading(false); } };
   useEffect(() => { load(); }, []);
-  const saveRoles = async () => { try { await api(`/api/v1/admin/members/${encodeURIComponent(editing.subject)}/roles`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles }) }); message.success(languageText(t, '权限已更新', 'Access updated')); setEditing(null); load(); } catch (e) { message.error(e.message); } };
-  const setStatus = async (row, status) => { try { await api(`/api/v1/admin/members/${encodeURIComponent(row.subject)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); message.success(languageText(t, '状态已更新', 'Status updated')); load(); } catch (e) { message.error(e.message); } };
+  const closeCreate = () => { setCreateOpen(false); createForm.resetFields(); setCreateSource('local'); };
+  const closeReset = () => { setResetting(null); resetForm.resetFields(); };
+  const changeSource = (source) => { setCreateSource(source); createForm.resetFields(['username', 'password', 'subject', 'roles']); };
+  const roleValues = (values) => {
+    const next = [...new Set((values || []).map((value) => String(value).trim()).filter(Boolean))];
+    if (next.some((value) => !rolePattern.test(value))) throw new Error(languageText(t, '角色只能包含字母、数字、冒号、下划线或连字符。', 'Roles may contain letters, numbers, colon, underscore, and hyphen only.'));
+    return next;
+  };
+  const saveRoles = async () => {
+    try {
+      const nextRoles = roleValues(roles);
+      await api(`/api/v1/admin/members/${encodeURIComponent(editing.subject)}/roles`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles: nextRoles }) });
+      feedback.success(languageText(t, '权限已更新', 'Access updated')); setEditing(null); load();
+    } catch (e) { feedback.error(e.message); }
+  };
+  const setStatus = async (row, status) => { try { await api(`/api/v1/admin/members/${encodeURIComponent(row.subject)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); feedback.success(languageText(t, '状态已更新', 'Status updated')); load(); } catch (e) { feedback.error(e.message); } };
+  const createMember = async () => {
+    try {
+      const values = await createForm.validateFields();
+      const nextRoles = roleValues(values.roles);
+      const payload = createSource === 'local'
+        ? { source: 'local', username: values.username.trim(), password: values.password, roles: nextRoles }
+        : { source: 'idp', subject: values.subject, roles: nextRoles };
+      setCreateSubmitting(true);
+      await api('/api/v1/admin/members', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      feedback.success(languageText(t, '成员已创建', 'Member created'));
+      closeCreate();
+      load();
+    } catch (e) {
+      if (!e?.errorFields) feedback.error(e.message);
+    } finally { setCreateSubmitting(false); }
+  };
+  const resetPassword = async () => {
+    try {
+      const values = await resetForm.validateFields();
+      setResetSubmitting(true);
+      await api(`/api/v1/admin/members/${encodeURIComponent(resetting.subject)}/password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_password: values.new_password }) });
+      feedback.success(languageText(t, '密码已重置', 'Password reset'));
+      closeReset();
+    } catch (e) {
+      if (!e?.errorFields) feedback.error(e.message);
+    } finally { setResetSubmitting(false); }
+  };
+  const sourceLabel = (row) => row.source === 'local'
+    ? (row.initial_local_admin ? languageText(t, '初始化管理员', 'Initial admin') : languageText(t, '本地用户', 'Local user'))
+    : row.source === 'service' ? languageText(t, '机器账号', 'Service') : 'IdP';
+  const roleRules = [{ validator: (_, value) => { try { roleValues(value); return Promise.resolve(); } catch (error) { return Promise.reject(error); } } }];
   const columns = [
+    { title: languageText(t, '用户名', 'Username'), dataIndex: 'username', render: (_, row) => <div><b>{row.username || row.subject}</b>{row.display_name && <div><Typography.Text type="secondary">{row.display_name}</Typography.Text></div>}</div>, ellipsis: true },
     { title: languageText(t, '账号标识', 'Subject'), dataIndex: 'subject', ellipsis: true },
-    { title: languageText(t, '来源', 'Source'), dataIndex: 'source', render: (_, row) => <Tag color={row.source === 'local' ? 'gold' : 'blue'}>{row.source === 'local' ? languageText(t, '初始化本地管理员', 'Initial local admin') : 'IdP'}</Tag> },
+    { title: languageText(t, '来源', 'Source'), dataIndex: 'source', render: (_, row) => <Tag color={row.source === 'local' ? 'gold' : row.source === 'service' ? 'purple' : 'blue'}>{sourceLabel(row)}</Tag> },
     { title: languageText(t, '应用角色', 'App roles'), dataIndex: 'roles', render: (value) => value?.length ? value.map((role) => <Tag key={role}>{role}</Tag>) : '—' },
     { title: languageText(t, '状态', 'Status'), dataIndex: 'status', render: (value) => <StatusTag value={value} t={t} /> },
-    { title: t.actions, render: (_, row) => row.initial_local_admin ? <Typography.Text type="secondary">{languageText(t, '系统账户', 'System account')}</Typography.Text> : <Space><Button type="link" onClick={() => { setEditing(row); setRoles(row.roles || []); }}>{languageText(t, '配置权限', 'Access')}</Button><Popconfirm title={row.status === 'active' ? languageText(t, '禁用后该账号将无法继续访问本应用，是否继续？', 'Disable this account from this application?') : languageText(t, '重新启用该账号？', 'Enable this account?')} onConfirm={() => setStatus(row, row.status === 'active' ? 'disabled' : 'active')}><Button type="link" danger={row.status === 'active'}>{row.status === 'active' ? languageText(t, '禁用', 'Disable') : languageText(t, '启用', 'Enable')}</Button></Popconfirm></Space> },
+    { title: t.actions, render: (_, row) => row.initial_local_admin ? <Typography.Text type="secondary">{languageText(t, '仅本人可改密', 'Self-service only')}</Typography.Text> : row.source === 'service' ? <Typography.Text type="secondary">—</Typography.Text> : <Space wrap><Button type="link" onClick={() => { setEditing(row); setRoles(row.roles || []); }}>{languageText(t, '配置权限', 'Access')}</Button>{row.source === 'local' && <Button type="link" onClick={() => { setResetting(row); resetForm.resetFields(); }}>{languageText(t, '重置密码', 'Reset password')}</Button>}<Popconfirm title={row.status === 'active' ? languageText(t, '禁用后该账号将无法继续访问本应用，是否继续？', 'Disable this account from this application?') : languageText(t, '重新启用该账号？', 'Enable this account?')} onConfirm={() => setStatus(row, row.status === 'active' ? 'disabled' : 'active')}><Button type="link" danger={row.status === 'active'}>{row.status === 'active' ? languageText(t, '禁用', 'Disable') : languageText(t, '启用', 'Enable')}</Button></Popconfirm></Space> },
   ];
-  return <Card title={languageText(t, '成员与权限', 'Members & access')}><Alert showIcon type="info" message={languageText(t, '仅管理 IdP 账号在本应用中的角色和访问状态；个人资料与密码始终在 IdP 管理。', 'Only application roles and access status are managed here. Profiles and passwords stay in the IdP.')} style={{ marginBottom: 16 }} /><Table rowKey="subject" loading={loading} dataSource={data.items} columns={columns} pagination={{ pageSize: 20 }} /><Modal title={languageText(t, '配置应用角色', 'Configure application roles')} open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveRoles} okText={languageText(t, '保存', 'Save')}><p>{editing?.subject}</p><Select mode="tags" style={{ width: '100%' }} value={roles} onChange={setRoles} options={(data.roles || []).map((role) => ({ value: role }))} tokenSeparators={[',']} placeholder={languageText(t, '输入或选择角色', 'Choose or enter roles')} /></Modal></Card>;
+  return <Card title={languageText(t, '成员与权限', 'Members & access')} extra={<Button type="primary" icon={<UserAddOutlined />} onClick={() => { createForm.resetFields(); setCreateSource('local'); setCreateOpen(true); }}>{languageText(t, '添加成员', 'Add member')}</Button>}>
+    {contextHolder}
+    <Alert showIcon type="info" message={languageText(t, '可预准入企业身份账号，或创建普通本地用户。初始管理员不可由其他管理员重置、禁用或改权限。', 'Pre-admit IdP identities or create ordinary local users. The initial administrator cannot be reset, disabled, or permission-edited by another admin.')} style={{ marginBottom: 16 }} />
+    <Table rowKey="subject" loading={loading} dataSource={data.items} columns={columns} pagination={{ pageSize: 20 }} />
+    <Modal title={languageText(t, '配置应用角色', 'Configure application roles')} open={Boolean(editing)} onCancel={() => setEditing(null)} onOk={saveRoles} okText={languageText(t, '保存', 'Save')}><p>{editing?.subject}</p><Select mode="tags" style={{ width: '100%' }} value={roles} onChange={setRoles} options={(data.roles || []).map((role) => ({ value: role }))} tokenSeparators={[',']} placeholder={languageText(t, '输入或选择角色', 'Choose or enter roles')} /></Modal>
+    <Modal title={languageText(t, '添加成员', 'Add member')} open={createOpen} onCancel={() => { if (!createSubmitting) closeCreate(); }} onOk={createMember} confirmLoading={createSubmitting} destroyOnClose okText={languageText(t, '创建', 'Create')}>
+      <Form form={createForm} layout="vertical" initialValues={{ roles: [] }}>
+        <Form.Item label={languageText(t, '身份来源', 'Identity source')}><Select value={createSource} onChange={changeSource} options={[{ value: 'local', label: languageText(t, '本地用户', 'Local user') }, { value: 'idp', label: 'IdP' }]} /></Form.Item>
+        {createSource === 'local' ? <><Form.Item name="username" normalize={(value) => value?.trim()} label={languageText(t, '用户名', 'Username')} rules={[{ required: true, message: languageText(t, '请输入用户名', 'Enter a username') }, { pattern: usernamePattern, message: languageText(t, '使用 1–64 位 ASCII 字母、数字、点、下划线或连字符，且首位必须是字母或数字', 'Use 1–64 ASCII letters, numbers, dot, underscore, or hyphen; the first character must be a letter or number') }]}><Input autoComplete="off" minLength={1} maxLength={64} /></Form.Item><Form.Item name="password" label={languageText(t, '初始密码', 'Initial password')} rules={[{ required: true, message: languageText(t, '请输入密码', 'Enter a password') }, { min: 16, max: 128, message: languageText(t, '密码长度必须为 16–128 个字符', 'Password must be 16–128 characters') }]}><Input.Password autoComplete="new-password" /></Form.Item></> : <Form.Item name="subject" label={languageText(t, 'IdP 稳定 subject', 'Stable IdP subject')} rules={[{ required: true, message: languageText(t, '请输入 subject', 'Enter the stable subject') }, { max: 256, message: languageText(t, 'subject 不能超过 256 个字符', 'Subject cannot exceed 256 characters') }]}><Input autoComplete="off" /></Form.Item>}
+        <Form.Item name="roles" label={languageText(t, '应用角色', 'Application roles')} rules={roleRules}><Select mode="tags" tokenSeparators={[',']} options={(data.roles || []).map((role) => ({ value: role }))} placeholder={languageText(t, '选择或输入角色', 'Choose or enter roles')} /></Form.Item>
+      </Form>
+    </Modal>
+    <Modal title={languageText(t, '重置本地用户密码', 'Reset local user password')} open={Boolean(resetting)} onCancel={() => { if (!resetSubmitting) closeReset(); }} onOk={resetPassword} confirmLoading={resetSubmitting} destroyOnClose okText={languageText(t, '重置', 'Reset')}>
+      <Form form={resetForm} layout="vertical"><Form.Item name="new_password" label={languageText(t, '新密码', 'New password')} rules={[{ required: true, message: languageText(t, '请输入新密码', 'Enter a new password') }, { min: 16, max: 128, message: languageText(t, '密码长度必须为 16–128 个字符', 'Password must be 16–128 characters') }]}><Input.Password autoComplete="new-password" /></Form.Item></Form>
+    </Modal>
+  </Card>;
 }
 
 function Relations() {

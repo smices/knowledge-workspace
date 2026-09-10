@@ -21,6 +21,14 @@ const applyBrand = () => {
   }
 };
 applyBrand();
+const logoutLink = document.querySelector('.login-link[href="/auth/logout"]');
+if (logoutLink && !document.querySelector('.account-link')) {
+  const accountLink = document.createElement('a');
+  accountLink.className = 'login-link account-link';
+  accountLink.href = '/account';
+  accountLink.textContent = '账户';
+  logoutLink.before(accountLink);
+}
 const api = async (url, options = {}) => {
   const response = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...(options.headers || {}) } });
   const data = await response.json().catch(() => ({}));
