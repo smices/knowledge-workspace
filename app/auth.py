@@ -13,8 +13,10 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 
@@ -41,6 +43,16 @@ class OIDCDiscovery:
     jwks_uri: str
     userinfo_endpoint: str | None = None
     end_session_endpoint: str | None = None
+    issuer: str | None = None
+
+
+_DISCOVERY_CACHE_TTL_SECONDS = 300
+_DISCOVERY_CACHE_SIZE = 16
+_JWKS_CACHE_SIZE = 16
+_JWKS_REFRESH_COOLDOWN_SECONDS = 5.0
+_JWKS_REFRESH_MAX_ISSUERS = 16
+_JWKS_REFRESH_LOCK = threading.Lock()
+_JWKS_REFRESH_UNTIL: dict[str, float] = {}
 
 
 def _b64(value: bytes) -> str:
@@ -90,7 +102,10 @@ def authorization_request(metadata: OIDCDiscovery | None = None) -> tuple[str, s
             "code_challenge_method": "S256",
         }
     )
-    endpoint = (metadata or discover()).authorization_endpoint
+    try:
+        endpoint = (metadata or discover()).authorization_endpoint
+    except (RuntimeError, httpx.HTTPError) as exc:
+        raise HTTPException(503, "OIDC discovery unavailable") from exc
     return f"{endpoint}?{query}", state, nonce, verifier
 
 
@@ -123,13 +138,65 @@ def browser_session_active(request: Request) -> bool:
 
 def _principal_from_claims(claims: dict[str, Any]) -> Principal:
     subject = claims.get("sub")
-    tenant_id = claims.get("tenant_id") or settings.identity_default_tenant_id
+    claim_tenant = claims.get("tenant_id")
+    configured_tenant = settings.identity_default_tenant_id
+    if claim_tenant is not None and (
+        not isinstance(claim_tenant, str) or not claim_tenant.strip()
+    ):
+        raise ValueError("OIDC identity contains an invalid application tenant")
+    if configured_tenant and claim_tenant and claim_tenant != configured_tenant:
+        raise ValueError("OIDC identity belongs to another application tenant")
+    tenant_id = claim_tenant or configured_tenant
     if not isinstance(subject, str) or not subject.strip() or not isinstance(tenant_id, str) or not tenant_id.strip():
         raise ValueError("OIDC identity does not contain an application tenant")
     # IdP roles are informational only. Application roles must be assigned in
     # sn_knowledge's own database; accepting them from the token would create a
     # privilege-escalation side door.
     return Principal(subject=subject, tenant_id=tenant_id, roles=frozenset())
+
+
+def _database_principal(principal: Principal, *, provision: bool, service_only: bool = False) -> Principal:
+    """Resolve current application access; bearer callers must already exist."""
+    from app.db import Principal as DbPrincipal, PrincipalRole, Role, SessionLocal, Tenant
+
+    try:
+        with SessionLocal() as db:
+            tenant = db.get(Tenant, principal.tenant_id)
+            identity = db.get(DbPrincipal, principal.subject)
+            if provision:
+                if tenant is None:
+                    tenant = Tenant(id=principal.tenant_id, name=principal.tenant_id)
+                    db.add(tenant)
+                elif tenant.status != "active":
+                    raise HTTPException(403, "Application access is disabled")
+                if identity is None:
+                    if principal.source == "local":
+                        raise HTTPException(403, "Application access is disabled")
+                    identity = DbPrincipal(id=principal.subject, tenant_id=principal.tenant_id,
+                                           display_name=None, principal_type="idp")
+                    db.add(identity)
+                elif (identity.tenant_id != principal.tenant_id or identity.status != "active"
+                      or (identity.principal_type == "local_admin") != (principal.source == "local")):
+                    raise HTTPException(403, "Application access is disabled")
+                db.commit()
+            elif (tenant is None or tenant.status != "active" or identity is None
+                  or identity.tenant_id != principal.tenant_id or identity.status != "active"
+                  or (identity.principal_type == "local_admin") != (principal.source == "local")
+                  or (service_only and identity.principal_type != "service_account")):
+                raise HTTPException(403, "Application access is not provisioned")
+            role_names = db.scalars(
+                select(Role.name)
+                .join(PrincipalRole, PrincipalRole.role_id == Role.id)
+                .where(
+                    PrincipalRole.principal_id == principal.subject,
+                    Role.tenant_id == principal.tenant_id,
+                )
+            ).all()
+        return Principal(principal.subject, principal.tenant_id, frozenset(role_names), principal.source)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, "Application authorization unavailable") from exc
 
 
 def _sign_session(principal: Principal, now: int | None = None) -> str:
@@ -181,9 +248,42 @@ def principal_from_token(authorization: str | None = Header(default=None)) -> Pr
         raise HTTPException(401, "Invalid token") from exc
 
 
+def principal_from_oidc_token(authorization: str | None = Header(default=None)) -> Principal:
+    """Validate an OIDC access token and resolve its provisioned DB principal."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Bearer token required")
+    token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(401, "Invalid bearer token")
+    try:
+        metadata = discover()
+        key = _signing_key(metadata, token)
+        claims = jwt.decode(
+            token,
+            key=key,
+            algorithms=["RS256", "ES256", "PS256"],
+            audience=settings.identity_client_id,
+            issuer=_issuer(),
+            options={"require": ["exp", "iss", "sub", "aud"]},
+        )
+        identity = _principal_from_claims(claims)
+        identity = Principal(identity.subject, identity.tenant_id, identity.roles, source="service")
+        return _database_principal(identity, provision=False, service_only=True)
+    except (jwt.PyJWKClientConnectionError, httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(503, "OIDC authorization unavailable") from exc
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(401, "Invalid bearer token") from exc
+
+
 def principal_from_session(
     request: Request, authorization: str | None = Header(default=None)
 ) -> Principal:
+    if authorization is not None:
+        if settings.auth_mode.lower() == "oidc":
+            return principal_from_oidc_token(authorization)
+        if settings.auth_mode.lower() == "jwt":
+            return principal_from_token(authorization)
+        raise HTTPException(401, "Bearer authentication is disabled")
     if settings.auth_mode.lower() == "dev":
         # ponytail: local-only bypass; never enable AUTH_MODE=dev in IDC.
         return Principal("local-admin", "tenant-local", frozenset({"admin", "finance"}))
@@ -192,63 +292,118 @@ def principal_from_session(
         principal = _verify_session(session)
         # IdP identity is authentication only. Resolve business roles from the
         # application's own database so an IdP claim can never elevate access.
-        try:
-            from app.db import Principal as DbPrincipal, PrincipalRole, Role, SessionLocal, Tenant
-
-            with SessionLocal() as db:
-                identity = db.get(DbPrincipal, principal.subject)
-                if identity is None:
-                    if db.get(Tenant, principal.tenant_id) is None:
-                        db.add(Tenant(id=principal.tenant_id, name=principal.tenant_id))
-                    db.add(DbPrincipal(id=principal.subject, tenant_id=principal.tenant_id,
-                                       display_name=None, principal_type="idp"))
-                    db.commit()
-                elif (identity.tenant_id != principal.tenant_id or identity.status != "active"
-                      or (identity.principal_type == "local_admin") != (principal.source == "local")):
-                    raise HTTPException(403, "Application access is disabled")
-                role_names = db.scalars(
-                    select(Role.name)
-                    .join(PrincipalRole, PrincipalRole.role_id == Role.id)
-                    .where(
-                        PrincipalRole.principal_id == principal.subject,
-                        Role.tenant_id == principal.tenant_id,
-                    )
-                ).all()
-            return Principal(principal.subject, principal.tenant_id, frozenset(role_names))
-        except HTTPException:
-            raise
-        except Exception as exc:
-            # A database failure must not turn into an unauthenticated request.
-            raise HTTPException(503, "Application authorization unavailable") from exc
+        return _database_principal(principal, provision=True)
     if settings.auth_mode.lower() == "jwt":
         return principal_from_token(authorization)
     raise HTTPException(401, "OIDC login required")
 
 
-def discover() -> OIDCDiscovery:
+def _safe_oidc_endpoint(value: str, label: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError(f"OIDC discovery returned an invalid {label}")
+    if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise RuntimeError(f"OIDC discovery returned an insecure {label}")
+    return value
+
+
+@lru_cache(maxsize=_DISCOVERY_CACHE_SIZE)
+def _discover_cached(issuer: str, time_bucket: int) -> OIDCDiscovery:
     response = httpx.get(
-        _issuer() + "/.well-known/openid-configuration",
+        issuer + "/.well-known/openid-configuration",
         timeout=settings.identity_http_timeout_seconds,
         follow_redirects=False,
     )
     response.raise_for_status()
     data = response.json()
     try:
+        discovered_issuer = _safe_oidc_endpoint(str(data["issuer"]), "issuer").rstrip("/")
+        if discovered_issuer != issuer.rstrip("/"):
+            raise RuntimeError("OIDC discovery issuer does not match configured issuer")
+        authorization_endpoint = _safe_oidc_endpoint(
+            str(data["authorization_endpoint"]), "authorization endpoint"
+        )
+        token_endpoint = _safe_oidc_endpoint(str(data["token_endpoint"]), "token endpoint")
+        jwks_uri = _safe_oidc_endpoint(str(data["jwks_uri"]), "JWKS URI")
+        userinfo_endpoint = data.get("userinfo_endpoint")
+        end_session_endpoint = data.get("end_session_endpoint")
         return OIDCDiscovery(
-            authorization_endpoint=str(data["authorization_endpoint"]),
-            token_endpoint=str(data["token_endpoint"]),
-            jwks_uri=str(data["jwks_uri"]),
-            userinfo_endpoint=data.get("userinfo_endpoint"),
-            end_session_endpoint=data.get("end_session_endpoint"),
+            authorization_endpoint=authorization_endpoint,
+            token_endpoint=token_endpoint,
+            jwks_uri=jwks_uri,
+            userinfo_endpoint=(_safe_oidc_endpoint(str(userinfo_endpoint), "userinfo endpoint")
+                                if userinfo_endpoint else None),
+            end_session_endpoint=(_safe_oidc_endpoint(str(end_session_endpoint), "logout endpoint")
+                                  if end_session_endpoint else None),
+            issuer=discovered_issuer,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("OIDC discovery response is incomplete") from exc
 
 
+def discover() -> OIDCDiscovery:
+    issuer = _issuer()
+    return _discover_cached(issuer, int(time.monotonic() / _DISCOVERY_CACHE_TTL_SECONDS))
+
+
+@lru_cache(maxsize=_JWKS_CACHE_SIZE)
+def _jwks_client(uri: str, timeout: float) -> jwt.PyJWKClient:
+    return jwt.PyJWKClient(
+        uri,
+        timeout=timeout,
+        cache_jwk_set=True,
+        lifespan=_DISCOVERY_CACHE_TTL_SECONDS,
+    )
+
+
+def _cached_jwk_exists(client: jwt.PyJWKClient, kid: str) -> bool:
+    cache = getattr(client, "jwk_set_cache", None)
+    if cache is None or cache.get() is None:
+        return False
+    # PyJWT stores the cached response as a raw ``{"keys": [...]}`` dict,
+    # while ``get_signing_keys`` converts it to PyJWKSet and applies its
+    # signing-use filter.  Calling the public method here does not fetch while
+    # the cache is live, and avoids treating encryption-only keys as usable.
+    try:
+        return any(key.key_id == kid for key in client.get_signing_keys())
+    except jwt.PyJWKClientError:
+        return False
+
+
+def _signing_key(metadata: OIDCDiscovery, token: str):
+    """Resolve a cached key while rate-limiting failed unknown-kid refreshes."""
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except jwt.PyJWTError:
+        raise
+    if not isinstance(kid, str) or not kid:
+        raise jwt.PyJWKClientError("OIDC token has no signing key id")
+    client = _jwks_client(metadata.jwks_uri, settings.identity_http_timeout_seconds)
+    refresh_key = metadata.issuer or _issuer()
+    if _cached_jwk_exists(client, kid):
+        return client.get_signing_key_from_jwt(token).key
+    with _JWKS_REFRESH_LOCK:
+        if _cached_jwk_exists(client, kid):
+            return client.get_signing_key_from_jwt(token).key
+        now = time.monotonic()
+        if _JWKS_REFRESH_UNTIL.get(refresh_key, 0.0) > now:
+            raise jwt.PyJWKClientError("OIDC signing key refresh temporarily rate-limited")
+        if len(_JWKS_REFRESH_UNTIL) >= _JWKS_REFRESH_MAX_ISSUERS:
+            oldest = min(_JWKS_REFRESH_UNTIL, key=_JWKS_REFRESH_UNTIL.get)
+            _JWKS_REFRESH_UNTIL.pop(oldest, None)
+        _JWKS_REFRESH_UNTIL[refresh_key] = now + _JWKS_REFRESH_COOLDOWN_SECONDS
+        key = client.get_signing_key_from_jwt(token).key
+        _JWKS_REFRESH_UNTIL.pop(refresh_key, None)
+        return key
+
+
 def exchange_code(code: str, verifier: str, nonce: str) -> Principal:
     if not code or not verifier or not nonce:
         raise HTTPException(400, "Invalid OIDC callback")
-    metadata = discover()
+    try:
+        metadata = discover()
+    except (RuntimeError, httpx.HTTPError) as exc:
+        raise HTTPException(503, "OIDC discovery unavailable") from exc
     response = httpx.post(
         metadata.token_endpoint,
         data={
@@ -268,7 +423,7 @@ def exchange_code(code: str, verifier: str, nonce: str) -> Principal:
     if not isinstance(id_token, str):
         raise HTTPException(401, "OIDC provider did not return an ID token")
     try:
-        key = jwt.PyJWKClient(metadata.jwks_uri).get_signing_key_from_jwt(id_token).key
+        key = _signing_key(metadata, id_token)
         claims = jwt.decode(
             id_token,
             key=key,
@@ -311,6 +466,7 @@ __all__ = [
     "new_pkce_pair",
     "principal_from_session",
     "principal_from_token",
+    "principal_from_oidc_token",
     "safe_next_path",
     "_principal_from_claims",
     "_sign_session",

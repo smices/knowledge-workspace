@@ -29,6 +29,27 @@ LOCAL_ADMIN_PASSWORD=<至少 16 字符，仅保存在部署 Secret 中>
 - `sub` 是稳定身份键。应用角色从本地数据库 `principal_roles`/`roles` 读取，绝不信任 IdP token 中的 roles。
 - `/auth/login` 的 `next` 只接受本站相对路径，应用入口和 callback 由 IdP 服务端登记，不接受请求参数覆盖。
 
+## 机器调用与 Service Account
+
+生产 `AUTH_MODE=oidc` 也接受机器调用的 OIDC access token：
+
+```http
+Authorization: Bearer <OIDC access token>
+```
+
+服务端从 discovery 的 `jwks_uri` 取得签名密钥，并要求 token 的签名算法、`iss`、`aud`、`sub` 和未过期的 `exp` 均有效；`aud` 使用现有的 `IDENTITY_CLIENT_ID`。无效 bearer 不会退回使用浏览器 session cookie。
+
+机器身份必须预先写入本应用的 `principals`，且 `tenant_id` 必须等于 `IDENTITY_DEFAULT_TENANT_ID`、`status=active`、`principal_type=service_account`。再由本应用管理员通过现有“成员与权限”接口为该 subject 分配角色；机器 token 中的 `roles`、`tenant_id` 等字段不授予权限，服务端每次请求都从 `principal_roles`/`roles` 重新读取当前角色。因此禁用 service account 或移除角色会立即影响后续请求。
+
+`sub` 是 OpenIdentity client-credentials token 中的稳定 service-account subject，必须用 token 实际返回的值建记录。示例（由部署管理员执行一次，具体数据库连接由部署方式提供）：
+
+```sql
+INSERT INTO principals (id, tenant_id, display_name, principal_type, status)
+VALUES ('<token-sub>', '<IDENTITY_DEFAULT_TENANT_ID>', 'Knowledge API worker', 'service_account', 'active');
+```
+
+然后使用已登录的本应用管理员调用 `PUT /api/v1/admin/members/<token-sub>/roles` 分配最小角色。客户端通过 discovery 返回的 `token_endpoint` 使用 `grant_type=client_credentials` 获取 access token，并在调用 API 时发送上述 header；client secret 只放在机器的 Secret 中，不放入代码、日志或请求 URL。
+
 ## 应用管理员与 IdP 员工账号
 
 首次以 `AUTH_MODE=oidc` 启动时，服务使用 `LOCAL_ADMIN_USERNAME` 与 `LOCAL_ADMIN_PASSWORD` 创建唯一的本地初始化管理员；凭据仅在首次创建时读取并以哈希保存，之后修改环境变量不会重置账号或密码。该账号从 `/login/admin` 进入 Admin，用于为已通过 IdP 准入的员工账号配置本应用角色和启用状态。
@@ -44,6 +65,7 @@ LOCAL_ADMIN_PASSWORD=<至少 16 字符，仅保存在部署 Secret 中>
 ## 未完成记录
 
 - [x] 应用侧 OIDC Authorization Code + PKCE、state/nonce、JWT 签名、issuer、audience 和本地角色映射。
+- [x] OIDC bearer access token 的 issuer、audience、JWKS 签名和 expiry 校验，以及已显式配置 service account 的数据库角色映射。
 - [x] 注销使用 discovery 的 `end_session_endpoint`，并在 IdP 不可用时清理本地会话。
 - [ ] 由 OpenIdentity 平台提供正式生产 issuer、client ID/secret、租户 ID，并登记精确 callback/logout 回跳地址。
 - [ ] 完成真实生产登录态验收：登录成功、会话过期、401、403、失败回跳和权限拒绝。
