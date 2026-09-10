@@ -39,13 +39,20 @@ metadata:
   name: knowledge-api
   namespace: knowledge-system
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: {app: knowledge-api}
   template:
     metadata:
       labels: {app: knowledge-api}
     spec:
+      terminationGracePeriodSeconds: 150
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: knowledge-api}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -102,13 +109,30 @@ metadata:
   name: knowledge-worker
   namespace: knowledge-system
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: {app: knowledge-worker}
   template:
     metadata:
       labels: {app: knowledge-worker}
     spec:
+      terminationGracePeriodSeconds: 150
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: knowledge-worker}
+      initContainers:
+        - name: migrate
+          image: knowledge-app:latest
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - {configMapRef: {name: knowledge-app-config}}
+            - {secretRef: {name: knowledge-app-secret}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -128,3 +152,23 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: ["ALL"]}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: knowledge-api
+  namespace: knowledge-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: knowledge-api}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: knowledge-worker
+  namespace: knowledge-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: knowledge-worker}

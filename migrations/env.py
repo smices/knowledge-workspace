@@ -1,7 +1,7 @@
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 
 from alembic import context
 from app.config import settings
@@ -54,12 +54,21 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+        postgres = connection.dialect.name == "postgresql"
+        if postgres:
+            connection.execute(text("SET lock_timeout = '120s'"))
+            connection.execute(text("SELECT pg_advisory_lock(734106872)"))
+            connection.commit()
+        try:
+            context.configure(connection=connection, target_metadata=target_metadata)
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            if postgres:
+                if connection.in_transaction():
+                    connection.rollback()
+                connection.execute(text("SELECT pg_advisory_unlock(734106872)"))
+                connection.commit()
 
 
 if context.is_offline_mode():
