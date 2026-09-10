@@ -10,3 +10,11 @@
 - After implementation, review the diff for bugs, missing boundaries, requirements mismatches, and quality issues. Fix confirmed problems, rerun relevant checks, then deliver.
 - Current objective: close the architecture, authorization, reliability, machine-caller, capacity-protection, and test gaps identified in the project audit. Do not claim support for 1500 employees and AI workers without representative workload evidence.
 - Preserve unrelated work and keep secrets and machine-specific paths out of tracked artifacts.
+
+## Product requirements (2026-09-10 update)
+
+- Track unfinished work and acceptance evidence in `docs/implementation-backlog.md`; implement and review it in bounded phases rather than marking planned capabilities complete.
+- Knowledge content requires authentication. Support local username/password login (including the installation administrator) alongside OpenIdentity OIDC login.
+- Public self-registration is closed. Administrators can create application users; do not add an anonymous registration endpoint.
+- Local credentials and IdP identities are separate. Never collect IdP passwords, use a password grant, or merge identities by email/name. IdP account identity uses the verified stable subject.
+- Read OpenIdentity's application and API service integration contracts before identity changes. External IdP registration, credentials, and deployment require separate authorization.
