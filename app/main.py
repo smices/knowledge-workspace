@@ -733,6 +733,7 @@ def _list_documents(p: Principal, offset: int, limit: int, *, administrative: bo
     conditions = (Document.tenant_id == p.tenant_id, Document.status.notin_(["deleted", "deleting"])) \
         if administrative else document_access(p)
     with SessionLocal() as db:
+        total = db.scalar(select(func.count()).select_from(Document).where(*conditions))
         rows = db.execute(select(Document, KnowledgeBase.name).outerjoin(
             KnowledgeBase, KnowledgeBase.id == Document.knowledge_base_id
         ).where(
@@ -742,7 +743,7 @@ def _list_documents(p: Principal, offset: int, limit: int, *, administrative: bo
                             "knowledge_base": base_name, "content_type": doc.content_type,
                             "status": doc.status, "error": doc.error,
                             "created_at": doc.created_at.isoformat()}
-                           for doc, base_name in rows]}
+                           for doc, base_name in rows], "total": total}
 
 
 @app.get("/api/v1/documents")
