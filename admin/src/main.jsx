@@ -72,6 +72,10 @@ function Documents() {
   const [file, setFile] = useState(null);
   const [replaceTarget, setReplaceTarget] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [grantTarget, setGrantTarget] = useState(null);
+  const [grantRoles, setGrantRoles] = useState([]);
+  const [grantOptions, setGrantOptions] = useState([]);
+  const [grantSubmitting, setGrantSubmitting] = useState(false);
   const load = async () => {
     pending.current?.abort();
     const controller = new AbortController(); pending.current = controller;
@@ -87,6 +91,20 @@ function Documents() {
   useEffect(() => { load(); return () => pending.current?.abort(); }, [page]);
   const selectFile = (next, target = null) => { setFile(next); setReplaceTarget(target); return false; };
   const clearFile = () => { setFile(null); setReplaceTarget(null); };
+  const openGrants = async (row) => {
+    try {
+      const data = await api(`/api/v1/admin/documents/${row.id}/grants`);
+      setGrantTarget(row); setGrantRoles(data.roles || []); setGrantOptions(data.available_roles || []);
+    } catch (e) { feedback.error(e.message); }
+  };
+  const saveGrants = async () => {
+    if (!grantTarget) return;
+    try {
+      setGrantSubmitting(true);
+      await api(`/api/v1/admin/documents/${grantTarget.id}/grants`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles: grantRoles }) });
+      feedback.success(languageText(t, '文档授权已更新', 'Document access updated')); setGrantTarget(null); await load();
+    } catch (e) { feedback.error(e.message); } finally { setGrantSubmitting(false); }
+  };
   const sendFile = async () => {
     if (!file) return feedback.warning(t.chooseFile);
     const method = replaceTarget ? 'PUT' : 'POST';
@@ -105,13 +123,17 @@ function Documents() {
     { title: t.status, dataIndex: 'status', render: (v) => <StatusTag value={v} t={t} /> },
     { title: t.error, dataIndex: 'error', ellipsis: true, render: (v) => v ? <Typography.Text type="danger">{v}</Typography.Text> : '—' },
     { title: t.createdAt, dataIndex: 'created_at', valueType: 'dateTime' },
-    { title: t.actions, render: (_, row) => <Space><Upload showUploadList={false} beforeUpload={(next) => selectFile(next, row)}><Button type="link">{t.replace}</Button></Upload>{row.status === 'failed' && <Button type="link" onClick={async () => { await api(`/api/v1/documents/${row.id}/reindex`, { method: 'POST' }); message.success(t.queued); load(); }}>{t.rebuild}</Button>}<Popconfirm title={t.confirmDelete} onConfirm={async () => { await api(`/api/v1/documents/${row.id}`, { method: 'DELETE' }); message.success(t.delete); load(); }}><Button danger type="link">{t.delete}</Button></Popconfirm></Space> },
+    { title: t.actions, render: (_, row) => <Space><Button type="link" onClick={() => openGrants(row)}>{languageText(t, '授权', 'Access')}</Button><Upload showUploadList={false} beforeUpload={(next) => selectFile(next, row)}><Button type="link">{t.replace}</Button></Upload>{row.status === 'failed' && <Button type="link" onClick={async () => { await api(`/api/v1/documents/${row.id}/reindex`, { method: 'POST' }); message.success(t.queued); load(); }}>{t.rebuild}</Button>}<Popconfirm title={t.confirmDelete} onConfirm={async () => { await api(`/api/v1/documents/${row.id}`, { method: 'DELETE' }); message.success(t.delete); load(); }}><Button danger type="link">{t.delete}</Button></Popconfirm></Space> },
   ];
   return <Card title={t.documents} extra={<Space><Popconfirm title={t.confirmRebuildAll} onConfirm={async () => { await api('/api/v1/admin/documents/reindex-all', { method: 'POST' }); message.success(t.rebuildAllQueued); load(); }}><Button>{t.rebuildAll}</Button></Popconfirm><Upload showUploadList={false} beforeUpload={(next) => selectFile(next)}><Button type="primary">{t.selectFile}</Button></Upload></Space>}>
     {file && <div className="pending-upload"><span>{languageText(t, '已选择：', 'Selected: ')}<b>{file.name}</b>{replaceTarget ? languageText(t, `，将替换「${replaceTarget.title}」`, `, replacing “${replaceTarget.title}”`) : languageText(t, '，将作为新文档上传', ', ready to upload')}</span><Space><Button type="primary" onClick={sendFile}>{replaceTarget ? t.confirmReplace : t.confirmUpload}</Button><Button onClick={clearFile}>{t.reselect}</Button></Space></div>}
     {contextHolder}
     <Table rowKey="id" loading={loading} dataSource={rows} columns={columns} scroll={{ x: 1000 }} pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, onChange: setPage }} />
     <Modal open={Boolean(preview)} title={preview?.title} width={900} footer={null} onCancel={() => setPreview(null)}><Descriptions bordered column={1}><Descriptions.Item label={t.documentId}>{preview?.document_id}</Descriptions.Item><Descriptions.Item label={t.indexedChunks}>{preview?.chunk_count ?? 0}</Descriptions.Item><Descriptions.Item label={t.content}><pre className="content-preview">{preview?.content}</pre></Descriptions.Item></Descriptions></Modal>
+    <Modal title={languageText(t, '文档访问授权', 'Document access')} open={Boolean(grantTarget)} onCancel={() => { if (!grantSubmitting) setGrantTarget(null); }} onOk={saveGrants} confirmLoading={grantSubmitting} destroyOnClose okText={languageText(t, '授权', 'Save')}>
+      <p>{grantTarget?.title}</p><Alert type="info" showIcon message={languageText(t, '仅拥有任一选中应用角色的成员可以检索此文档。留空将拒绝所有角色访问。', 'Only members with one selected application role can retrieve this document. Leaving it empty denies every role.')} style={{ marginBottom: 16 }} />
+      <Select mode="tags" style={{ width: '100%' }} value={grantRoles} onChange={setGrantRoles} options={grantOptions.map((value) => ({ value }))} tokenSeparators={[',']} placeholder={languageText(t, '应用角色', 'Application roles')} />
+    </Modal>
   </Card>;
 }
 

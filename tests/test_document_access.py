@@ -31,9 +31,9 @@ def store(monkeypatch):
     engine.dispose()
 
 
-def caller(tenant="tenant", roles=frozenset({"hr"})):
+def caller(tenant="tenant", roles=frozenset({"hr"}), headers=None):
     main.app.dependency_overrides[principal_from_session] = lambda: Principal("reader", tenant, roles)
-    return TestClient(main.app)
+    return TestClient(main.app, headers={"Origin": "http://testserver"} if headers is None else headers)
 
 
 @pytest.mark.parametrize("tenant,roles", [("other", {"hr"}), ("tenant", {"finance"}), ("tenant", set())])
@@ -59,6 +59,65 @@ def test_role_union_revocation_and_deletion(store):
     assert client.get("/api/v1/documents/doc/content").status_code == 404
     assert client.get("/api/v1/documents/doc/status").status_code == 404
     assert client.get("/api/v1/documents").json()["items"] == []
+
+
+def test_document_grant_management_syncs_qdrant_and_denies_cross_tenant(store, monkeypatch):
+    class Vector:
+        def __init__(self):
+            self.calls, self.fail, self.fail_on, self.attempts = [], False, None, 0
+
+        def set_payload(self, _collection, payload, _selector, **_kwargs):
+            self.attempts += 1
+            if self.fail or self.fail_on == self.attempts:
+                raise RuntimeError("qdrant unavailable")
+            self.calls.append(payload)
+
+    vector = Vector()
+    monkeypatch.setattr(main, "vector_client", vector)
+    admin = caller(roles=frozenset({"admin"}))
+    assert admin.get("/api/v1/admin/documents/doc/grants").json()["roles"] == ["hr"]
+    changed = admin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["finance"]})
+    assert changed.status_code == 200
+    assert changed.json()["roles"] == ["finance"]
+    assert vector.calls == [{"allowed_roles": []}, {"allowed_roles": ["finance"]}]
+    with store() as s:
+        assert main._document_grant_roles(s, "doc", "tenant") == {"finance"}
+        assert s.get(db.Tenant, "tenant").knowledge_revision == 1
+        assert s.query(db.AuditEvent).filter_by(action="document.grants.update").count() == 1
+    assert caller(roles=frozenset({"finance"})).get("/api/v1/documents/doc/content").status_code == 200
+    assert caller(roles=frozenset({"hr"})).get("/api/v1/documents/doc/content").status_code == 404
+
+    vector.fail = True
+    admin = caller(roles=frozenset({"admin"}))
+    failed = admin.put("/api/v1/admin/documents/doc/grants", json={"roles": []})
+    assert failed.status_code == 503
+    with store() as s:
+        assert main._document_grant_roles(s, "doc", "tenant") == {"finance"}
+    assert caller("other", frozenset({"admin"})).get("/api/v1/admin/documents/doc/grants").status_code == 404
+
+    vector.fail = False
+    vector.fail_on = vector.attempts + 2
+    admin = caller(roles=frozenset({"admin"}))
+    delayed = admin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["hr"]})
+    assert delayed.status_code == 503
+    with store() as s:
+        assert main._document_grant_roles(s, "doc", "tenant") == {"hr"}
+    assert caller(roles=frozenset({"finance"})).get("/api/v1/documents/doc/content").status_code == 404
+    vector.fail_on = None
+    admin = caller(roles=frozenset({"admin"}))
+    assert admin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["hr"]}).status_code == 200
+
+
+def test_write_origin_gate_rejects_browser_requests_but_preserves_bearer_api_calls(store, monkeypatch):
+    class Vector:
+        def set_payload(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(main, "vector_client", Vector())
+    no_origin = caller(roles=frozenset({"admin"}), headers={})
+    assert no_origin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["finance"]}).status_code == 403
+    bearer = caller(roles=frozenset({"admin"}), headers={"Authorization": "Bearer synthetic"})
+    assert bearer.put("/api/v1/admin/documents/doc/grants", json={"roles": ["finance"]}).status_code == 200
 
 
 def test_pagination_bounds_and_admin_metadata_do_not_grant_content(store):

@@ -137,6 +137,18 @@ app.add_middleware(RequestMetrics)
 
 
 @app.middleware("http")
+async def browser_write_origin_gate(request: Request, call_next):
+    """CSRF-protect every browser state change; machine Bearer calls stay API-safe."""
+    if (request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and not request.headers.get("authorization", "").startswith("Bearer ")):
+        try:
+            require_same_origin(request)
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def admin_page_gate(request: Request, call_next):
     path = request.url.path
     is_admin_html = path == "/admin" or path == "/admin/" or (
@@ -229,6 +241,11 @@ class RoleRequest(BaseModel):
 
 
 class MemberRolesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    roles: set[str] = Field(default_factory=set)
+
+
+class DocumentGrantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     roles: set[str] = Field(default_factory=set)
 
@@ -985,6 +1002,24 @@ def document_access(p: Principal):
     )
 
 
+def _document_grant_roles(db, document_id: str, tenant_id: str) -> set[str]:
+    return set(db.scalars(select(Role.name).join(
+        DocumentGrant, DocumentGrant.role_id == Role.id
+    ).where(DocumentGrant.document_id == document_id, Role.tenant_id == tenant_id)))
+
+
+def _sync_document_acl(document: Document, roles: set[str]) -> None:
+    vector_client.set_payload(
+        settings.qdrant_collection,
+        {"allowed_roles": sorted(roles)},
+        models.FilterSelector(filter=models.Filter(must=[
+            models.FieldCondition(key="tenant_id", match=models.MatchValue(value=document.tenant_id)),
+            models.FieldCondition(key="document_id", match=models.MatchValue(value=document.id)),
+        ])),
+        wait=True,
+    )
+
+
 def _list_documents(p: Principal, offset: int, limit: int, *, administrative: bool = False):
     conditions = (Document.tenant_id == p.tenant_id, Document.status.notin_(["deleted", "deleting"])) \
         if administrative else document_access(p)
@@ -1720,6 +1755,63 @@ def admin_documents(p: Principal = Depends(principal_from_session),
                     offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)):
     require_admin(p)
     return _list_documents(p, offset, limit, administrative=True)
+
+
+@app.get("/api/v1/admin/documents/{document_id}/grants")
+def document_grants(document_id: str, p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    with SessionLocal() as db:
+        document = db.scalar(select(Document).where(
+            Document.id == document_id, Document.tenant_id == p.tenant_id,
+        ))
+        if document is None:
+            raise HTTPException(404, "document not found")
+        return {
+            "document_id": document.id,
+            "roles": sorted(_document_grant_roles(db, document.id, p.tenant_id)),
+            "available_roles": db.scalars(select(Role.name).where(
+                Role.tenant_id == p.tenant_id).order_by(Role.name)).all(),
+        }
+
+
+@app.put("/api/v1/admin/documents/{document_id}/grants")
+def update_document_grants(document_id: str, body: DocumentGrantRequest,
+                           p: Principal = Depends(principal_from_session)):
+    require_admin(p)
+    roles = _validated_roles(body.roles)
+    with SessionLocal() as db:
+        document = db.scalar(select(Document).where(
+            Document.id == document_id, Document.tenant_id == p.tenant_id,
+            Document.status.notin_(["deleted", "deleting"]),
+        ).with_for_update())
+        if document is None:
+            raise HTTPException(404, "document not found")
+        previous = _document_grant_roles(db, document.id, p.tenant_id)
+        # Remove access in Qdrant before the database commits. A failed or
+        # delayed expansion can deny access temporarily, but never leaks it.
+        ready = document.status == "ready"
+        if ready:
+            try:
+                _sync_document_acl(document, previous & roles)
+            except Exception as exc:
+                raise HTTPException(503, "vector authorization sync unavailable") from exc
+        db.execute(delete(DocumentGrant).where(DocumentGrant.document_id == document.id))
+        for name in roles:
+            role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
+            if role is None:
+                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=name)
+                db.add(role)
+                db.flush()
+            db.add(DocumentGrant(document_id=document.id, role_id=role.id))
+        bump_knowledge_revision(p.tenant_id, db)
+        audit(db, p, "document.grants.update", "document", document.id, "accepted")
+        db.commit()
+        if ready:
+            try:
+                _sync_document_acl(document, roles)
+            except Exception as exc:
+                raise HTTPException(503, "authorization saved; retry to finish vector sync") from exc
+    return {"document_id": document_id, "roles": sorted(roles)}
 
 
 @app.get("/api/v1/documents/{document_id}/content")

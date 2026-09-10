@@ -119,7 +119,7 @@ API → 身份认证 → PostgreSQL 获取有效角色/权限
 - `document_versions(document_id, version)` 唯一。
 - `ingestion_jobs(document_version_id, job_type)` 唯一，支持幂等。
 - 文档版本只有一个当前版本。
-- 权限变更可审计，并触发 Qdrant payload 同步任务。
+- 权限变更可审计并提升租户知识版本。对已就绪文档，API 先把 Qdrant 角色缩至旧/新授权的交集、再提交 PostgreSQL 授权、最后同步新角色；首次收紧失败则拒绝保存，最终同步失败时保持收紧后的安全状态并返回可重试错误，不能以旧 payload 继续授权。
 
 ### MinIO
 
@@ -217,6 +217,10 @@ Point ID 使用 `document_version_id:chunk_id`，禁止只使用 `document_id:ch
 7. 仅 `approved` 映射可扩展检索，且仅在该映射所属的当前文档版本内生效；替换、重建或删除版本时删除映射。不得采用模糊昵称猜测。
 8. 构造上下文并生成答案。
 9. 返回答案、引用、检索分数、模型版本和 trace ID。
+
+### 文档授权管理
+
+应用管理员通过文档授权接口读取和替换当前文档的角色集合。空集合是明确的“无人可检索”，而非公开文档；角色、租户和审计记录仍以 PostgreSQL 为事实源。管理员界面仅展示和修改本租户文档，跨租户文档 ID 返回不存在。浏览器所有非安全方法统一检查同源 `Origin`/`Referer`；携带 Bearer 的机器调用保持 API 边界，不依赖浏览器 Cookie。
 
 ### 问答响应
 
