@@ -4,7 +4,14 @@ from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, Unique
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from app.config import settings
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+_engine_options = {}
+if settings.database_url.startswith("postgresql"):
+    _engine_options = {
+        "pool_timeout": settings.dependency_timeout_seconds,
+        "connect_args": {"connect_timeout": max(1, int(settings.dependency_timeout_seconds)),
+                         "options": f"-c statement_timeout={int(settings.dependency_timeout_seconds * 1000)}"},
+    }
+engine = create_engine(settings.database_url, pool_pre_ping=True, **_engine_options)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 

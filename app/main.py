@@ -47,6 +47,7 @@ from app.cache import (
     singleflight,
 )
 from app.config import settings
+from app.admission import admit, run_sync
 from app.db import (
     AnswerFeedback,
     AuditEvent,
@@ -72,8 +73,10 @@ from app.storage import put_file
 from app.vector import (_focus_parts, async_client as async_vector_client, client as vector_client,
                         ensure_collection, normalize_mention, search, search_async)
 
-llm = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
-async_llm = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+llm = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url,
+             timeout=settings.model_timeout_seconds, max_retries=1)
+async_llm = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url,
+                       timeout=settings.model_timeout_seconds, max_retries=1)
 CACHE_CONTRACT_VERSION = "direct-evidence-v5"
 
 
@@ -829,27 +832,32 @@ def delete_document(document_id: str, p: Principal = Depends(principal_from_sess
 
 @app.post("/api/v1/retrieval/search")
 @app.post("/search")
-def retrieve(body: SearchRequest, p: Principal = Depends(principal_from_session)):
+async def retrieve(body: SearchRequest, request: Request, p: Principal = Depends(principal_from_session)):
+    async with admit(p):
+        return await run_cancellable(_retrieve(body, p), request)
+
+
+async def _retrieve(body: SearchRequest, p: Principal):
     started = perf_counter()
-    revision = knowledge_revision(p.tenant_id)
+    revision = await run_sync(knowledge_revision, p.tenant_id)
     key = cache_key("retrieval", CACHE_CONTRACT_VERSION, p.tenant_id, sorted(p.roles), revision,
                     normalize_query(body.query), body.limit, settings.embedding_model)
-    cached = cache_get(key)
+    cached = await run_sync(cache_get, key)
     if cached is not None:
         return cached
     if not p.roles:
         result = {"results": []}
-        cache_put(key, result, 30)
-        log_query(p, body.query, "retrieval", 0, started)
+        await run_sync(cache_put, key, result, 30)
+        await run_sync(log_query, p, body.query, "retrieval", 0, started)
         return result
-    vector = llm.embeddings.create(model=settings.embedding_model, input=body.query).data[0].embedding
-    aliases, records = approved_aliases(p, body.query)
-    points = search(vector, p.tenant_id, set(p.roles), body.limit, body.query, aliases)
+    vector = (await async_llm.embeddings.create(model=settings.embedding_model, input=body.query)).data[0].embedding
+    aliases, records = await run_sync(approved_aliases, p, body.query)
+    points = await search_async(vector, p.tenant_id, set(p.roles), body.limit, body.query, aliases)
     contexts = [point.payload or {} for point in points]
     result = {"results": [dict(point.payload or {}, score=point.score) for point in points],
               "entity_bindings": alias_bindings(contexts, records)}
-    cache_put(key, result, 120)
-    log_query(p, body.query, "retrieval", len(points), started)
+    await run_sync(cache_put, key, result, 120)
+    await run_sync(log_query, p, body.query, "retrieval", len(points), started)
     return result
 
 
@@ -889,9 +897,9 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
                        exact_key: str, semantic_bucket: str, aliases: dict[str, list[str]], records: list[dict]) -> dict:
     started = perf_counter()
     if not p.roles:
-        log_query(p, body.query, "answer", 0, started)
+        await run_sync(log_query, p, body.query, "answer", 0, started)
         result = _answer_result("没有找到当前角色可访问的知识。", "no_answer", [], [], revision)
-        cache_put(exact_key, result, 300)
+        await run_sync(cache_put, exact_key, result, 300)
         return result
     vector = (await async_llm.embeddings.create(
         model=settings.embedding_model, input=body.query
@@ -899,18 +907,18 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
     points = await search_async(vector, p.tenant_id, set(p.roles), min(body.limit, 3), body.query, aliases)
     contexts = [point.payload or {} for point in points]
     if not contexts:
-        log_query(p, body.query, "answer", 0, started)
+        await run_sync(log_query, p, body.query, "answer", 0, started)
         result = _answer_result("根据当前可访问的知识，我无法确认这个问题。",
                                 "no_answer", [], [], revision)
-        cache_put(exact_key, result, 300)
+        await run_sync(cache_put, exact_key, result, 300)
         return result
     entities = query_entities(body.query)
     evidence = evidence_signature(contexts)
-    similar = semantic_get(semantic_bucket, vector, entities, evidence)
+    similar = await run_sync(semantic_get, semantic_bucket, vector, entities, evidence)
     if similar is not None:
         result = _cache_result(similar, "l2", revision)
-        cache_put(exact_key, similar, 21600)
-        log_query(p, body.query, "answer:l2", len(result.get("citations", [])), started)
+        await run_sync(cache_put, exact_key, similar, 21600)
+        await run_sync(log_query, p, body.query, "answer:l2", len(result.get("citations", [])), started)
         return result
     context_text = "\n\n".join(
         f"[证据 {i + 1}] 文档：{item.get('title')}，章节块：{item.get('chunk_index')}\n{item.get('content', '')[:1400]}"
@@ -942,48 +950,48 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
         answer_text, state = direct_only_answer(contract)
         contract = direct_contract or evidence_contract(answer_text, contexts, state)
     result = _answer_result(answer_text, state, citations, contract, revision, alias_bindings(contexts, records))
-    cache_put(exact_key, result, 21600 if state == "answered" else 300)
+    await run_sync(cache_put, exact_key, result, 21600 if state == "answered" else 300)
     if state == "answered" and contract and all(
             item["support"] == "supported" and item["confidence"] >= 0.85 for item in contract):
-        semantic_put(semantic_bucket, vector, entities, evidence, result)
-    log_query(p, body.query, "answer", len(citations), started)
+        await run_sync(semantic_put, semantic_bucket, vector, entities, evidence, result)
+    await run_sync(log_query, p, body.query, "answer", len(citations), started)
     return result
 
 
 async def _answer(body: AnswerRequest, p: Principal):
-    revision = knowledge_revision(p.tenant_id)
+    revision = await run_sync(knowledge_revision, p.tenant_id)
     scope = (p.tenant_id, sorted(p.roles), revision, body.limit, body.temperature,
              settings.embedding_model, settings.chat_model, "answer-prompt-v3")
     exact_key = cache_key("answer", CACHE_CONTRACT_VERSION, *scope, normalize_query(body.query))
-    cached = cache_get(exact_key)
+    cached = await run_sync(cache_get, exact_key)
     if cached is not None:
-        return _with_feedback(_cache_result(cached, "l1", revision), p)
-    aliases, records = approved_aliases(p, body.query)
+        return await run_sync(_with_feedback, _cache_result(cached, "l1", revision), p)
+    aliases, records = await run_sync(approved_aliases, p, body.query)
     semantic_bucket = cache_key("answer-semantic", CACHE_CONTRACT_VERSION, *scope)
     result, joined = await singleflight(
         exact_key, lambda: _answer_work(body, p, revision, exact_key, semantic_bucket, aliases, records)
     )
     result = _cache_result(result, "l0", revision) if joined else result
-    return _with_feedback(result, p)
+    return await run_sync(_with_feedback, result, p)
 
 
 async def _graph(body: GraphRequest, p: Principal):
     started = perf_counter()
-    revision = knowledge_revision(p.tenant_id)
+    revision = await run_sync(knowledge_revision, p.tenant_id)
     key = cache_key("graph", CACHE_CONTRACT_VERSION, p.tenant_id, sorted(p.roles), revision,
                     normalize_query(body.query), body.limit,
                     settings.embedding_model, settings.chat_model)
-    cached = cache_get(key)
+    cached = await run_sync(cache_get, key)
     if cached is not None:
         return cached
     if not p.roles:
         return {"nodes": [], "edges": [], "citations": [], "message": "没有可访问的知识。"}
     vector = (await async_llm.embeddings.create(model=settings.embedding_model, input=body.query)).data[0].embedding
-    aliases, records = approved_aliases(p, body.query)
+    aliases, records = await run_sync(approved_aliases, p, body.query)
     points = await search_async(vector, p.tenant_id, set(p.roles), min(body.limit, 3), body.query, aliases)
     contexts = [point.payload or {} for point in points]
     if not contexts:
-        log_query(p, body.query, "graph", 0, started)
+        await run_sync(log_query, p, body.query, "graph", 0, started)
         return {"nodes": [], "edges": [], "citations": [], "message": "没有找到可建立关系的原文证据。"}
     evidence = "\n\n".join(
         f"[证据 {index + 1}] {item.get('title')}，第 {item.get('chunk_index')} 段\n{item.get('content', '')[:720]}"
@@ -1004,7 +1012,7 @@ async def _graph(body: GraphRequest, p: Principal):
     statements = [f"{edge['source']} | {edge['label']} | {edge['target']}" for edge in extracted]
     pairs = direct_pair_support(body.query, statements, contexts, records)
     extracted = [edge for edge, pair in zip(extracted, pairs) if pair is not False]
-    persist_relationships(p, contexts, extracted)
+    await run_sync(persist_relationships, p, contexts, extracted)
     edges = merge_relationships(extracted)
     names = []
     for edge in edges:
@@ -1015,8 +1023,8 @@ async def _graph(body: GraphRequest, p: Principal):
               "citations": citations_for(points, contexts),
               "entity_bindings": alias_bindings(contexts, records),
               "message": "" if edges else "当前证据不足以确认人物或实体关系。"}
-    cache_put(key, result, 300)
-    log_query(p, body.query, "graph", len(edges), started)
+    await run_sync(cache_put, key, result, 300)
+    await run_sync(log_query, p, body.query, "graph", len(edges), started)
     return result
 
 
@@ -1041,13 +1049,15 @@ async def run_cancellable(work, request: Request):
 @app.post("/api/v1/rag/answer")
 async def answer(body: AnswerRequest, request: Request,
                  p: Principal = Depends(principal_from_session)):
-    return await run_cancellable(_answer(body, p), request)
+    async with admit(p):
+        return await run_cancellable(_answer(body, p), request)
 
 
 @app.post("/api/v1/rag/graph")
 async def graph(body: GraphRequest, request: Request,
                 p: Principal = Depends(principal_from_session)):
-    return await run_cancellable(_graph(body, p), request)
+    async with admit(p):
+        return await run_cancellable(_graph(body, p), request)
 
 
 @app.put("/api/v1/rag/answers/{answer_id}/feedback")

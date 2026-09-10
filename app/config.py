@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     embedding_model: str = "nomic-embed-text"
     embedding_dimensions: int = 768
     chat_model: str = "qwen3:8b"
+    model_timeout_seconds: float = Field(default=60, gt=0, le=120)
+    request_timeout_seconds: float = Field(default=90, gt=0, le=180)
+    dependency_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    employee_concurrency: int = Field(default=48, ge=1)
+    service_concurrency: int = Field(default=16, ge=1)
+    tenant_employee_concurrency: int = Field(default=32, ge=1)
+    tenant_service_concurrency: int = Field(default=8, ge=1)
+    employee_requests_per_minute: int = Field(default=30, ge=1)
+    service_requests_per_minute: int = Field(default=60, ge=1)
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     # Browser authentication is opt-in locally and enabled with AUTH_MODE=oidc

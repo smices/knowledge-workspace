@@ -12,7 +12,9 @@ from redis import Redis
 from app.config import settings
 
 
-cache = Redis.from_url(settings.redis_url, decode_responses=True)
+cache = Redis.from_url(settings.redis_url, decode_responses=True,
+                       socket_timeout=settings.dependency_timeout_seconds,
+                       socket_connect_timeout=settings.dependency_timeout_seconds)
 
 
 def cache_key(kind: str, *parts: object) -> str:
@@ -139,9 +141,22 @@ async def singleflight(key: str, factory: Callable[[], Awaitable[dict]]) -> tupl
     try:
         return await asyncio.shield(flight.task), joined
     finally:
+        cleanup = None
         async with _flight_lock:
             flight.waiters -= 1
             if flight.waiters == 0:
                 if not flight.task.done():
                     flight.task.cancel()
+                    cleanup = flight.task
                 _flights.pop(key, None)
+        # The final waiter retains its admission lease until shared work stops.
+        if cleanup is not None:
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not cleanup.cancelled():
+                cleanup.exception()
