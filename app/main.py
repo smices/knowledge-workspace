@@ -714,14 +714,27 @@ async def upload_document(
     return {"document_id": document_id, "document_version_id": version_id, "status": "queued"}
 
 
-@app.get("/api/v1/documents")
-def list_documents(p: Principal = Depends(principal_from_session)):
+def document_access(p: Principal):
+    return (
+        Document.tenant_id == p.tenant_id,
+        Document.status.notin_(["deleted", "deleting"]),
+        select(DocumentGrant.document_id).join(Role, Role.id == DocumentGrant.role_id).where(
+            DocumentGrant.document_id == Document.id,
+            Role.tenant_id == p.tenant_id,
+            Role.name.in_(p.roles),
+        ).exists(),
+    )
+
+
+def _list_documents(p: Principal, offset: int, limit: int, *, administrative: bool = False):
+    conditions = (Document.tenant_id == p.tenant_id, Document.status.notin_(["deleted", "deleting"])) \
+        if administrative else document_access(p)
     with SessionLocal() as db:
         rows = db.execute(select(Document, KnowledgeBase.name).outerjoin(
             KnowledgeBase, KnowledgeBase.id == Document.knowledge_base_id
         ).where(
-            Document.tenant_id == p.tenant_id, Document.status != "deleted"
-        ).order_by(Document.created_at.desc())).all()
+            *conditions
+        ).order_by(Document.created_at.desc(), Document.id).offset(offset).limit(limit)).all()
         return {"items": [{"id": doc.id, "title": doc.title, "version": doc.version,
                             "knowledge_base": base_name, "content_type": doc.content_type,
                             "status": doc.status, "error": doc.error,
@@ -729,10 +742,16 @@ def list_documents(p: Principal = Depends(principal_from_session)):
                            for doc, base_name in rows]}
 
 
+@app.get("/api/v1/documents")
+def list_documents(p: Principal = Depends(principal_from_session),
+                   offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)):
+    return _list_documents(p, offset, limit)
+
+
 @app.get("/api/v1/documents/{document_id}/status")
 def document_status(document_id: str, p: Principal = Depends(principal_from_session)):
     with SessionLocal() as db:
-        doc = db.scalar(select(Document).where(Document.id == document_id, Document.tenant_id == p.tenant_id))
+        doc = db.scalar(select(Document).where(Document.id == document_id, *document_access(p)))
         if doc is None:
             raise HTTPException(404, "document not found")
         return {"id": doc.id, "title": doc.title, "status": doc.status, "error": doc.error}
@@ -1169,7 +1188,7 @@ def admin_overview(p: Principal = Depends(principal_from_session)):
 def top_questions(p: Principal = Depends(principal_from_session)):
     with SessionLocal() as db:
         rows = db.execute(select(QueryEvent.query, func.count(QueryEvent.id).label("count"))
-                         .where(QueryEvent.tenant_id == p.tenant_id)
+                         .where(QueryEvent.tenant_id == p.tenant_id, QueryEvent.subject == p.subject)
                          .group_by(QueryEvent.query).order_by(func.count(QueryEvent.id).desc()).limit(10)).all()
         return {"items": [{"question": query, "count": count} for query, count in rows]}
 
@@ -1193,15 +1212,16 @@ def admin_notifications(p: Principal = Depends(principal_from_session)):
 
 
 @app.get("/api/v1/admin/documents")
-def admin_documents(p: Principal = Depends(principal_from_session)):
+def admin_documents(p: Principal = Depends(principal_from_session),
+                    offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)):
     require_admin(p)
-    return list_documents(p)
+    return _list_documents(p, offset, limit, administrative=True)
 
 
 @app.get("/api/v1/documents/{document_id}/content")
 def document_content(document_id: str, p: Principal = Depends(principal_from_session)):
     with SessionLocal() as db:
-        doc = db.scalar(select(Document).where(Document.id == document_id, Document.tenant_id == p.tenant_id))
+        doc = db.scalar(select(Document).where(Document.id == document_id, *document_access(p)))
         if doc is None:
             raise HTTPException(404, "document not found")
         version = db.scalar(select(DocumentVersion).where(DocumentVersion.document_id == doc.id)
