@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ProTable, StatisticCard } from '@ant-design/pro-components';
 import { Alert, Avatar, Badge, Button, Card, Descriptions, Input, List, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography, Upload, message } from 'antd';
 import { DatabaseOutlined, FileSearchOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
@@ -63,28 +63,43 @@ function Dashboard() {
 
 function Documents() {
   const t = useAdminLanguage();
+  const [feedback, contextHolder] = message.useMessage();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pending = useRef(null);
   const [file, setFile] = useState(null);
   const [replaceTarget, setReplaceTarget] = useState(null);
   const [preview, setPreview] = useState(null);
-  const load = async () => { setLoading(true); try { setRows((await api('/api/v1/admin/documents')).items); } finally { setLoading(false); } };
-  useEffect(() => { load().catch((e) => message.error(e.message)); }, []);
+  const load = async () => {
+    pending.current?.abort();
+    const controller = new AbortController(); pending.current = controller;
+    setLoading(true);
+    try {
+      const data = await api(`/api/v1/admin/documents?offset=${(page - 1) * 20}&limit=20`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setRows(data.items); setTotal(data.total);
+      if (page > 1 && !data.items.length) setPage(Math.max(1, Math.ceil(data.total / 20)));
+    } catch (e) { if (e.name !== 'AbortError') feedback.error(e.message); }
+    finally { if (!controller.signal.aborted) setLoading(false); }
+  };
+  useEffect(() => { load(); return () => pending.current?.abort(); }, [page]);
   const selectFile = (next, target = null) => { setFile(next); setReplaceTarget(target); return false; };
   const clearFile = () => { setFile(null); setReplaceTarget(null); };
   const sendFile = async () => {
-    if (!file) return message.warning(t.chooseFile);
+    if (!file) return feedback.warning(t.chooseFile);
     const method = replaceTarget ? 'PUT' : 'POST';
     const url = replaceTarget ? `/api/v1/documents/${replaceTarget.id}` : '/api/v1/documents';
     try {
       const body = new FormData(); body.append('file', file);
       await api(url, { method, body });
-      message.success(method === 'PUT' ? t.replaceQueued : t.uploadQueued);
+      feedback.success(method === 'PUT' ? t.replaceQueued : t.uploadQueued);
       clearFile(); await load();
-    } catch (e) { message.error(e.message); }
+    } catch (e) { feedback.error(e.message); }
   };
   const columns = [
-    { title: t.document, dataIndex: 'title', ellipsis: true, render: (v, row) => <Button type="link" onClick={async () => setPreview(await api(`/api/v1/documents/${row.id}/content`))}>{v}</Button> },
+    { title: t.document, dataIndex: 'title', ellipsis: true, render: (v, row) => <Button type="link" onClick={async () => { try { setPreview(await api(`/api/v1/documents/${row.id}/content`)); } catch (e) { feedback.error(e.message); } }}>{v}</Button> },
     { title: t.knowledgeBase, dataIndex: 'knowledge_base', ellipsis: true, render: (v) => v || '—' },
     { title: t.version, dataIndex: 'version', render: (v) => v || 1 },
     { title: t.status, dataIndex: 'status', render: (v) => <StatusTag value={v} t={t} /> },
@@ -94,7 +109,8 @@ function Documents() {
   ];
   return <Card title={t.documents} extra={<Space><Popconfirm title={t.confirmRebuildAll} onConfirm={async () => { await api('/api/v1/admin/documents/reindex-all', { method: 'POST' }); message.success(t.rebuildAllQueued); load(); }}><Button>{t.rebuildAll}</Button></Popconfirm><Upload showUploadList={false} beforeUpload={(next) => selectFile(next)}><Button type="primary">{t.selectFile}</Button></Upload></Space>}>
     {file && <div className="pending-upload"><span>{languageText(t, '已选择：', 'Selected: ')}<b>{file.name}</b>{replaceTarget ? languageText(t, `，将替换「${replaceTarget.title}」`, `, replacing “${replaceTarget.title}”`) : languageText(t, '，将作为新文档上传', ', ready to upload')}</span><Space><Button type="primary" onClick={sendFile}>{replaceTarget ? t.confirmReplace : t.confirmUpload}</Button><Button onClick={clearFile}>{t.reselect}</Button></Space></div>}
-    <Table rowKey="id" loading={loading} dataSource={rows} columns={columns} pagination={{ pageSize: 20 }} />
+    {contextHolder}
+    <Table rowKey="id" loading={loading} dataSource={rows} columns={columns} scroll={{ x: 1000 }} pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, onChange: setPage }} />
     <Modal open={Boolean(preview)} title={preview?.title} width={900} footer={null} onCancel={() => setPreview(null)}><Descriptions bordered column={1}><Descriptions.Item label={t.documentId}>{preview?.document_id}</Descriptions.Item><Descriptions.Item label={t.indexedChunks}>{preview?.chunk_count ?? 0}</Descriptions.Item><Descriptions.Item label={t.content}><pre className="content-preview">{preview?.content}</pre></Descriptions.Item></Descriptions></Modal>
   </Card>;
 }
