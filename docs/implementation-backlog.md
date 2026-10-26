@@ -39,7 +39,7 @@
 | OPS-01 | 容量与灾备验收 | 待验证 | 1500 员工与 AI worker 混合压测、并发入库、积压恢复、备份恢复；明确流量及网关配额后在授权环境执行 |
 | OPS-02 | 生产身份与部署验收 | 待验证 | 正式 IdP client/callback/Secret、真实登录及撤销、多副本与基础服务 HA；不自动修改外部系统 |
 | OPS-03 | 共享基础设施兼容与验收 | 待验证 | 复用 base-plat 提供的共享服务；验证驱动/配置、迁移兼容性及应用连接。未发现 Knowledge 服务；缺失/不兼容项先报告，不在业务仓库部署副本或修改 infra。当前检查到 PostgreSQL 16.15/18.6、Redis 7.4.11、Qdrant 1.15.4、Kafka 4.3.1、SeaweedFS 4.48；Kubernetes 与 Compose 目标为 PostgreSQL 18 / Kafka 4；升级需保留既有数据，禁止直接以升级版本启动旧数据卷。Qdrant 1.13 client 对 1.15.4 server 的兼容性待验证 |
-| ID-01 | 业务 ID authority | 代码与数据库迁移完成，真实发号待授权接入 | 所有新持久化业务 ID 通过共享 `global-id-service`；验证调用方、并发分配、失败拒绝写入和重放边界。服务位于 `sn-base-plat` 命名空间，Service 为 `global-id-service`（8090/8091/8092）；应用业务 ID 已改由共享服务分配并拒绝 UUID；独立机器 audience 尚未获平台支持，真实发号和完整写链路未验收 |
+| ID-01 | 业务 ID authority | 代码、数据库、平台登记与真实 SDK 取号通过；应用链路待部署 | 所有新持久化业务 ID 通过共享 `global-id-service`；验证调用方、并发分配、失败拒绝写入和重放边界。服务位于 `sn-base-plat` 命名空间，Service 为 `global-id-service`（8090/8091/8092）；应用业务 ID 已改由共享服务分配并拒绝 UUID；独立机器客户端已通过 base-plat 登记，项目 SDK 真实取号已通过；Pod 内完整写链路待验收 |
 | M2M-03 | MCP 接口 | 未实现 | MCP transport、工具契约、输入/输出 schema、授权与错误边界；当前无 MCP 实现。复用已有授权 API 能力并纳入安全验收 |
 
 当前保护上限和已有验证见 [容量验收说明](capacity-readiness.md)。复杂 Agent 编排、自动工作流设计器和自研数据库不纳入本轮必做范围。
@@ -52,7 +52,7 @@
 | 文档替换 | `PUT /api/v1/documents/{document_id}`，管理员限定 | 继续验证授权、审计与失败恢复 |
 | OIDC 机器 Bearer | 基础签名/issuer/audience/subject/过期校验和本地角色映射 | 严格 `typ`/`azp`/tenant/scope 尚缺，见 M2M-01 |
 | MCP | 未发现实现 | 见 M2M-03 |
-| 业务 ID authority | 共享 global-id-service 2/2 可用；调用方及数据库已改为严格十进制 ID | 模拟 authority 的故障／迁移验证通过；真实机器授权与写入联调待完成，见 ID-01 |
+| 业务 ID authority | 共享 global-id-service 2/2 可用；调用方及数据库已改为严格十进制 ID | 模拟 authority 的故障／迁移验证通过；独立机器授权与真实 SDK 取号通过；Pod 内写入联调待完成，见 ID-01 |
 | Kubernetes 共享依赖 | 已检查基础服务版本；knowledge namespace 与专属 PG18 数据库已建立，应用 Pod 尚未部署 | 兼容性和应用连接尚未验收，见 OPS-03 |
 
 ## 交付记录
@@ -87,3 +87,8 @@
   - 存储桶检查改为单桶 head，不要求应用列举全部共享桶；覆盖存在、缺失、403和服务故障。镜像上下文采用白名单，排除本地凭据、虚拟环境和临时合同源码。
 
   - 镜像 `sn-knowledge:localidc-1ba9b1c9c3fd6f63` 已按固定 Python digest 和 uv.lock 构建为 amd64；断网容器内模块导入、迁移 head 打包及缺少 authority 配置拒绝发号检查通过。镜像未导入 localidc 节点，应用 Deployment 未应用；部署候选清单已校验 namespace、镜像、数据库 Secret 和客户端标签。
+
+- 2026-10-26（base-plat 正式接入）：复用平台已有的 scoped global-ID 登记及 local HUMAN bootstrap 流程，完成 `global-id-sn-knowledge`、`sn-knowledge` 两个专属客户端；这取代上轮只依据通用 IdP 管理合同得出的登记阻塞判断。
+  - JWT 签名、issuer、audience、scope、azp 校验及项目 SDK 真实分配3个 snowflake-v2 ID 通过；knowledge 专用 Secret 精确回读，无其他调用方凭据复用或轮换。
+  - SeaweedFS 使用已有 filer IAM 原生接口，无重启登记 knowledge 身份与 knowledge bucket。严格 TLS、自有桶 head、诊断对象 put/get/delete 和其他桶403通过；其他身份与静态配置摘要未变。
+  - localidc 候选清单已绑定专属发号、OIDC、存储 Secret 及公共存储 CA。真人登录、Pod 内写入与完整 RAG 仍待发布；模型推理服务／Provider 在 localidc 缺失，未自动安装重型组件。

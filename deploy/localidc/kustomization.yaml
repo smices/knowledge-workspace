@@ -24,6 +24,9 @@ patches:
         QDRANT_COLLECTION: knowledge_chunks_global_id_v1
         KAFKA_BOOTSTRAP_SERVERS: kafka-4.infra.svc.cluster.local:9092
         KAFKA_DOCUMENT_TOPIC: knowledge.documents.global-id.v1
+        S3_ENDPOINT_URL: https://seaweedfs-s3.infra.svc.cluster.local:8333
+        S3_BUCKET: knowledge
+        AWS_CA_BUNDLE: /etc/knowledge-storage/ca.crt
         IDENTITY_ISSUER: https://idp.is1.snnc.cc/realms/openidentity
         IDENTITY_REDIRECT_URI: https://knowledge.is1.snnc.cc/auth/callback
         IDENTITY_POST_LOGOUT_REDIRECT_URI: https://knowledge.is1.snnc.cc/
@@ -46,6 +49,54 @@ patches:
         value:
           secretRef:
             name: knowledge-database
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-global-id
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-oidc
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-storage
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts
+        value:
+          - name: knowledge-storage-ca
+            mountPath: /etc/knowledge-storage
+            readOnly: true
+      - op: add
+        path: /spec/template/spec/initContainers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-global-id
+      - op: add
+        path: /spec/template/spec/initContainers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-oidc
+      - op: add
+        path: /spec/template/spec/initContainers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-storage
+      - op: add
+        path: /spec/template/spec/initContainers/0/volumeMounts
+        value:
+          - name: knowledge-storage-ca
+            mountPath: /etc/knowledge-storage
+            readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes
+        value:
+          - name: knowledge-storage-ca
+            configMap:
+              name: knowledge-storage-ca
 replicas:
   - name: knowledge-api
     count: 1

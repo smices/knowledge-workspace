@@ -91,4 +91,6 @@ localidc 测试使用 issuer `https://idp.is1.snnc.cc/realms/openidentity`；生
 
 ## localidc 本轮登记结果（2026-10-26）
 
-已获授权登记知识库浏览器客户端及专属 global-ID 机器客户端，目标 namespace 为 `knowledge`。现网 OpenIdentity 0.2.101 管理 API 与当前正式合同核对发现：企业 Provider 列表为空；机器客户端跨资源 audience 仅支持 configuration-service 特例，尚不支持 global-id-service。因此两项登记未执行，不直接调用 Keycloak Admin API 绕过控制平面，也不借用平台已有客户端。平台补齐对应登记能力后再完成授权、Secret 注入和真实登录／发号验收。
+已通过 base-plat 已有的 localidc 平台登记流程完成两个独立客户端：`sn-knowledge` 为 confidential Code + PKCE S256 浏览器客户端，绑定既有 `local-password-browser` flow；`global-id-sn-knowledge` 仅具有 `global-id-service` audience 和 `global-id.generate` scope。凭据分别保存在 `knowledge/knowledge-oidc`、`knowledge/knowledge-global-id`，已回读比对。平台本地 HUMAN bootstrap 合同允许使用现有本地密码登录，不以企业 Provider 为本轮登记前置条件；这不代表已完成企业 Provider 生命周期联调。
+
+登记仅修改知识库自己的客户端，未改共享 scope、flow、发号权威配置或其他调用方。项目 Python SDK 已真实申请 3 个 snowflake-v2 ID，并校验令牌签名、issuer、audience、scope、azp；该证据来自实际共享服务。真人登录、应用回调／注销和 Pod 内完整写入链路尚待部署后验收。前一轮仅依据通用 IdP 管理合同得出的登记阻塞判断，已由本次平台专用登记结果取代。

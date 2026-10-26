@@ -113,4 +113,4 @@ deploy/appctl k8s-apply
 
 localidc 候选清单位于 `deploy/localidc`，复用 `knowledge/knowledge-database` 的数据库连接，使用独立的新索引／topic；候选镜像已在本机构建；先验证目标节点并导入镜像，再完成其余 Secret、模型、存储及域名授权，不能直接应用尚有占位值的候选清单。
 
-localidc 尚需完成专属 IdP 机器授权、模型服务及对象存储权限后才可完成上线验收。客户端注册必须使用现网 OpenIdentity 管理控制平面，不用安装脚本直接写 Keycloak，不借用其他应用客户端。
+localidc 的专属发号、浏览器 OIDC 和对象存储身份已通过 base-plat 的获准登记流程配置，分别引用 `knowledge-global-id`、`knowledge-oidc`、`knowledge-storage` Secret；存储公共 CA 使用 `knowledge-storage-ca`。通用管理控制平面与平台 localidc bootstrap 各遵守其正式合同，避免混用申请路径。仍需完成模型服务、运行配置与入口准入，才能执行完整上线验收。
