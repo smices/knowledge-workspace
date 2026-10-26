@@ -61,7 +61,7 @@ deploy/appctl status
 deploy/appctl docker-down
 ```
 
-Compose 使用已通过 `npm --prefix admin run build` 生成的 `admin/dist` 构建 Python 镜像；运行时仍由 `deploy/.env.local` 注入品牌与服务配置。修改 Admin 源码后应先重新执行构建并提交对应产物。
+Compose 使用已通过 `npm --prefix admin run build` 生成的 `admin/dist` 构建 Python 镜像；Python 基础镜像固定 digest，运行依赖由 `uv sync --frozen --no-dev --no-install-project` 按 `uv.lock` 安装；运行时仍由 `deploy/.env.local` 注入品牌与服务配置。修改 Admin 源码后应先重新执行构建并提交对应产物。
 
 ## PostgreSQL 18 / Kafka 4 升级边界
 
@@ -91,7 +91,7 @@ deploy/appctl k8s-check
 deploy/appctl k8s-apply
 ```
 
-清单部署 API、Worker、迁移 init container 和 ClusterIP Service。数据库、向量库、缓存、消息队列和对象存储应使用上述兼容的共享服务。入口域名、TLS 和网关策略由集群基础设施配置。localidc 应用部署和测试已获授权；生产部署及外部 IdP 注册仍需单独授权。
+应用 namespace 固定为 `knowledge`。清单部署 API、Worker、迁移 init container 和 ClusterIP Service。数据库、向量库、缓存、消息队列和对象存储应使用上述兼容的共享服务。入口域名、TLS 和网关策略由集群基础设施配置。localidc 应用部署和测试已获授权；生产部署及外部 IdP 注册仍需单独授权。
 
 ## 上线检查
 
@@ -102,3 +102,15 @@ deploy/appctl k8s-apply
 - Kubernetes 镜像使用不可变 tag 或 digest，不使用 `latest`。
 - 部署后检查 `/live`、`/health`、`/`、`/login`、`/home`、`/admin/` 和 `/brand.js`。
 - 分别验证登录、会话过期、401、403、退出和回跳路径。
+
+## 共享发号服务与数据库迁移
+
+所有新业务主键、事件、审计和 outbox ID 均由 base-plat `global-id-service` 分配，调用方通过独立机器身份取得 `global-id.generate` 权限。部署注入 `GLOBAL_ID_URL`、`GLOBAL_ID_TOKEN_URL`、`GLOBAL_ID_CLIENT_ID`、`GLOBAL_ID_CLIENT_SECRET`；集群批准的私网 HTTP 额外显式设置 `GLOBAL_ID_ALLOW_HTTP=true`，HTTPS 仍校验证书。配置缺失、请求失败或非规范响应会停止业务写入，无本地发号兜底。
+
+应用使用规范的正十进制 int64 **字符串**；数据库业务 ID 列限制为 19 字符并校验格式和范围，接口拒绝 UUID 业务 ID。Qdrant 的 point ID 使用同一 Chunk ID，并仅在 Qdrant 协议边界转换为整数。IdP subject、租户外部引用及固定安装键仍遵守各自契约。
+
+升级旧数据前停止本应用所有写入并保留数据库、对象存储和索引恢复点。前向迁移统一向权威服务申请新 ID，事务内改写主外键、审计、反馈、事件及 outbox 引用；不会保留 UUID 运行时兼容分支。原件对象键作为不透明存储地址保留，避免重命名文件造成数据丢失。迁移后启用新的应用专属 Qdrant collection 和 Kafka topic，再重建索引，禁止继续消费旧 UUID 消息或查询旧索引。旧恢复点仅用于人工回退，不进入运行时查询。迁移不可直接 downgrade，需要从备份恢复。
+
+localidc 候选清单位于 `deploy/localidc`，复用 `knowledge/knowledge-database` 的数据库连接，使用独立的新索引／topic；候选镜像已在本机构建；先验证目标节点并导入镜像，再完成其余 Secret、模型、存储及域名授权，不能直接应用尚有占位值的候选清单。
+
+localidc 尚需完成专属 IdP 机器授权、模型服务及对象存储权限后才可完成上线验收。客户端注册必须使用现网 OpenIdentity 管理控制平面，不用安装脚本直接写 Keycloak，不借用其他应用客户端。

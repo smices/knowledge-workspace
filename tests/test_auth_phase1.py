@@ -47,8 +47,13 @@ def _origin_headers():
     return {"Origin": "http://testserver"}
 
 
+def _admin_subject():
+    with main.SessionLocal() as store:
+        return store.get(db.LocalAdminCredential, local_admin.LOCAL_ADMIN_CREDENTIAL_ID).principal_id
+
+
 def _admin_cookie():
-    return _sign_session(Principal(local_admin.LOCAL_ADMIN_ID, "tenant-1", frozenset({"admin"}), source="local"))
+    return _sign_session(Principal(_admin_subject(), "tenant-1", frozenset({"admin"}), source="local"))
 
 
 def test_auth_options_and_local_mode_reject_bearer(monkeypatch):
@@ -89,9 +94,9 @@ def test_non_dev_rejects_secret_placeholders(field):
 
 def test_long_role_names_use_bounded_ids_and_keep_name_lookup(monkeypatch):
     _setup(monkeypatch)
-    principal = Principal(local_admin.LOCAL_ADMIN_ID, "tenant-1", frozenset({"admin"}), source="local")
+    principal = Principal(_admin_subject(), "tenant-1", frozenset({"admin"}), source="local")
     role = main.create_role(main.RoleRequest(name="r" * 128), principal)
-    assert len(role["id"]) == 36
+    assert role["id"].isdecimal() and 0 < int(role["id"]) <= 9223372036854775807
     assert role["name"] == "r" * 128
 
 
@@ -116,6 +121,9 @@ def test_member_sources_account_and_password_reset_invalidate_cookie(monkeypatch
     })
     assert local.status_code == 201
     local_subject = local.json()["subject"]
+    assert local_subject.isdecimal() and 0 < int(local_subject) <= 9223372036854775807
+    with session() as store:
+        assert store.get(db.Principal, local_subject).principal_type == "local_user"
     idp = client.post("/api/v1/admin/members", headers=_origin_headers(), json={
         "source": "idp", "subject": "idp-user", "roles": ["reader"],
     })

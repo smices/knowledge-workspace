@@ -13,9 +13,9 @@
 | 领域 | 决策 |
 |---|---|
 | 向量数据库 | Qdrant |
-| 业务事实源 | PostgreSQL |
+| 业务事实源 | 共享 PostgreSQL 18，应用 namespace 为 `knowledge` |
 | 原始文件 | MinIO（IDC 可替换为兼容 S3 的对象存储） |
-| 事件总线 | Kafka |
+| 事件总线 | 共享 Kafka 4 |
 | 缓存与协调 | Redis，不保存唯一事实 |
 | API | FastAPI，REST/JSON |
 | 本地运行 | OrbStack + Docker Compose |
@@ -24,6 +24,8 @@
 | 远程 Git | 暂不配置，由用户后续合入线上 Git |
 
 Qdrant 只负责向量索引和检索 payload，不作为文档、权限、任务状态或审计的事实源。Qdrant 删除后必须能够从 PostgreSQL 和 MinIO 重建。
+
+所有应用业务 ID 由 base-plat `global-id-service` 分配并以十进制 int64 字符串在数据库与 API 传递。数据库和调用方拒绝 UUID 业务 ID，无本地发号或双格式兼容；外部 IdP subject 保持身份提供方契约。既有未发布数据通过前向迁移统一改写关联并重建检索索引，发号失败停止业务写入。
 
 ## 2. 目标与非目标
 

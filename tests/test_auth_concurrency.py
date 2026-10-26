@@ -44,17 +44,17 @@ def test_postgres_password_resets_serialize_session_version(monkeypatch):
             store.flush()
             store.add(db.Principal(id="admin-auth", tenant_id="tenant-auth",
                                    principal_type="local_admin"))
-            store.add(db.Principal(id="local:user:auth", tenant_id="tenant-auth",
+            store.add(db.Principal(id="8101", tenant_id="tenant-auth",
                                    principal_type="local_user", display_name="auth"))
-            store.add(db.Principal(id="local:user:stale", tenant_id="tenant-auth",
+            store.add(db.Principal(id="8102", tenant_id="tenant-auth",
                                    principal_type="local_user", display_name="stale"))
             store.flush()
             store.add(db.LocalUserCredential(
-                principal_id="local:user:auth", tenant_id="tenant-auth", username="auth",
+                principal_id="8101", tenant_id="tenant-auth", username="auth",
                 password_hash=hash_password("initial-auth-password"),
             ))
             store.add(db.LocalUserCredential(
-                principal_id="local:user:stale", tenant_id="tenant-auth", username="stale",
+                principal_id="8102", tenant_id="tenant-auth", username="stale",
                 password_hash=hash_password("initial-stale-password"),
             ))
             store.commit()
@@ -78,15 +78,15 @@ def test_postgres_password_resets_serialize_session_version(monkeypatch):
 
         # A stale actor must fail after an administrator reset, even if the
         # caller passed dependency authentication before the reset committed.
-        stale_actor = Principal("local:user:stale", "tenant-auth", frozenset(), source="local")
-        reset("local:user:stale", "reset-stale-password")
+        stale_actor = Principal("8102", "tenant-auth", frozenset(), source="local")
+        reset("8102", "reset-stale-password")
         change_request = Request({
             "type": "http", "method": "POST", "path": "/api/v1/account/password",
             "scheme": "http", "server": ("testserver", 80),
             "headers": [(b"origin", b"http://testserver")],
         })
         with session() as store:
-            before = store.get(db.LocalUserCredential, "local:user:stale").password_hash
+            before = store.get(db.LocalUserCredential, "8102").password_hash
         with pytest.raises(HTTPException) as stale_error:
             main.change_account_password(
                 change_request,
@@ -96,8 +96,8 @@ def test_postgres_password_resets_serialize_session_version(monkeypatch):
             )
         assert stale_error.value.status_code == 401
         with session() as store:
-            credential = store.get(db.LocalUserCredential, "local:user:stale")
-            assert store.get(db.Principal, "local:user:stale").session_version == 1
+            credential = store.get(db.LocalUserCredential, "8102")
+            assert store.get(db.Principal, "8102").session_version == 1
             assert credential.password_hash == before
             assert verify_password("reset-stale-password", credential.password_hash)
 
@@ -107,9 +107,9 @@ def test_postgres_password_resets_serialize_session_version(monkeypatch):
         locker = engine.connect()
         locker.execute(text("BEGIN"))
         locker.execute(text("SELECT id FROM principals WHERE id = :subject FOR UPDATE"),
-                       {"subject": "local:user:auth"})
+                       {"subject": "8101"})
         executor = ThreadPoolExecutor(max_workers=2)
-        futures = [executor.submit(reset, "local:user:auth", password)
+        futures = [executor.submit(reset, "8101", password)
                    for password in ("reset-auth-password-1", "reset-auth-password-2")]
         try:
             deadline = time.monotonic() + 5
@@ -132,11 +132,11 @@ def test_postgres_password_resets_serialize_session_version(monkeypatch):
         results = [future.result(timeout=10) for future in futures]
         assert all(item["reset"] for item in results)
         with session() as store:
-            assert store.get(db.Principal, "local:user:auth").session_version == 2
+            assert store.get(db.Principal, "8101").session_version == 2
 
         with pytest.raises(HTTPException) as expired:
             auth._database_principal(
-                Principal("local:user:auth", "tenant-auth", frozenset(), source="local"),
+                Principal("8101", "tenant-auth", frozenset(), source="local"),
                 provision=False, check_session=True,
             )
         assert expired.value.status_code == 401

@@ -7,17 +7,16 @@ import hashlib
 import hmac
 import re
 import secrets
-from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.auth import Principal
 from app.config import settings
+from app.global_ids import new_id
 from app.db import (LocalAdminCredential, LocalUserCredential, Principal as DbPrincipal,
                     PrincipalRole, Role, SessionLocal, Tenant)
 
-LOCAL_ADMIN_ID = "local:initial-admin"
 LOCAL_ADMIN_CREDENTIAL_ID = "initial"
 # Legacy installer hashes predate the 128-character creation bound.  This
 # applies only when verifying the existing initial administrator credential.
@@ -114,19 +113,17 @@ def ensure_local_admin() -> None:
         tenant_id = settings.identity_default_tenant_id or "tenant-local"
         if db.get(Tenant, tenant_id) is None:
             db.add(Tenant(id=tenant_id, name=tenant_id))
-        account = db.get(DbPrincipal, LOCAL_ADMIN_ID)
-        if account is None:
-            account = DbPrincipal(id=LOCAL_ADMIN_ID, tenant_id=tenant_id, display_name="Initial local administrator",
-                                  principal_type="local_admin")
-            db.add(account)
+        principal_id = new_id()
+        db.add(DbPrincipal(id=principal_id, tenant_id=tenant_id, display_name="Initial local administrator",
+                           principal_type="local_admin"))
         role = db.scalar(select(Role).where(Role.tenant_id == tenant_id, Role.name == "admin"))
         if role is None:
-            role = Role(id=str(uuid4()), tenant_id=tenant_id, name="admin")
+            role = Role(id=new_id(), tenant_id=tenant_id, name="admin")
             db.add(role)
             db.flush()
-        if db.get(PrincipalRole, {"principal_id": LOCAL_ADMIN_ID, "role_id": role.id}) is None:
-            db.add(PrincipalRole(principal_id=LOCAL_ADMIN_ID, role_id=role.id))
-        db.add(LocalAdminCredential(id=LOCAL_ADMIN_CREDENTIAL_ID, principal_id=LOCAL_ADMIN_ID,
+        if db.get(PrincipalRole, {"principal_id": principal_id, "role_id": role.id}) is None:
+            db.add(PrincipalRole(principal_id=principal_id, role_id=role.id))
+        db.add(LocalAdminCredential(id=LOCAL_ADMIN_CREDENTIAL_ID, principal_id=principal_id,
                                     username=username, password_hash=hash_password(password)))
         try:
             db.commit()

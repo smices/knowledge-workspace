@@ -1,0 +1,53 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../k8s
+images:
+  - name: registry.example.invalid/knowledge-app
+    newName: sn-knowledge
+    newTag: localidc-1ba9b1c9c3fd6f63
+patches:
+  - target:
+      kind: ConfigMap
+      name: knowledge-app-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: knowledge-app-config
+        namespace: knowledge
+      data:
+        GLOBAL_ID_URL: http://global-id-service.sn-base-plat.svc.cluster.local:8090
+        GLOBAL_ID_TOKEN_URL: https://idp.is1.snnc.cc/realms/openidentity/protocol/openid-connect/token
+        GLOBAL_ID_ALLOW_HTTP: "true"
+        QDRANT_URL: http://qdrant-1.infra.svc.cluster.local:6333
+        QDRANT_COLLECTION: knowledge_chunks_global_id_v1
+        KAFKA_BOOTSTRAP_SERVERS: kafka-4.infra.svc.cluster.local:9092
+        KAFKA_DOCUMENT_TOPIC: knowledge.documents.global-id.v1
+        IDENTITY_ISSUER: https://idp.is1.snnc.cc/realms/openidentity
+        IDENTITY_REDIRECT_URI: https://knowledge.is1.snnc.cc/auth/callback
+        IDENTITY_POST_LOGOUT_REDIRECT_URI: https://knowledge.is1.snnc.cc/
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+      - op: add
+        path: /spec/template/spec/initContainers/0/imagePullPolicy
+        value: Never
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-database
+      - op: add
+        path: /spec/template/spec/initContainers/0/envFrom/-
+        value:
+          secretRef:
+            name: knowledge-database
+replicas:
+  - name: knowledge-api
+    count: 1
+  - name: knowledge-worker
+    count: 1

@@ -20,7 +20,9 @@ from app.config import settings
 from worker import main as worker
 
 REQUIRED = ("TEST_DATABASE_URL", "TEST_QDRANT_URL", "TEST_S3_URL", "TEST_S3_ACCESS_KEY",
-            "TEST_S3_SECRET_KEY", "TEST_KAFKA_BOOTSTRAP")
+            "TEST_S3_SECRET_KEY", "TEST_KAFKA_BOOTSTRAP", "GLOBAL_ID_URL",
+            "GLOBAL_ID_TOKEN_URL", "GLOBAL_ID_CLIENT_ID", "GLOBAL_ID_CLIENT_SECRET",
+            "GLOBAL_ID_ALLOW_HTTP")
 pytestmark = pytest.mark.skipif(not all(os.getenv(key) for key in REQUIRED),
                                 reason="requires isolated pipeline test services")
 

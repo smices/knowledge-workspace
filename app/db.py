@@ -1,8 +1,9 @@
 from datetime import datetime
-from uuid import uuid4
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, CheckConstraint, create_engine
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from app.config import settings
+from app.global_ids import new_id, validate_id
 
 _engine_options = {}
 if settings.database_url.startswith("postgresql"):
@@ -15,12 +16,17 @@ engine = create_engine(settings.database_url, pool_pre_ping=True, **_engine_opti
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
-def new_id() -> str:
-    return str(uuid4())
-
-
 class Base(DeclarativeBase):
     pass
+
+
+class BusinessId(TypeDecorator):
+    """Decimal int64 wire identifiers; issuance belongs to global-id-service."""
+    impl = String(19)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return None if value is None else validate_id(value)
 
 
 class Tenant(Base):
@@ -42,10 +48,16 @@ class Principal(Base):
     session_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    __table_args__ = (CheckConstraint(
+        "principal_type NOT IN ('local_user', 'local_admin') OR (length(id) <= 19 AND CAST(id AS BIGINT) > 0 "
+        "AND CAST(CAST(id AS BIGINT) AS VARCHAR) = id)",
+        name="ck_principals_local_business_id",
+    ),)
+
 
 class Role(Base):
     __tablename__ = "roles"
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -54,7 +66,7 @@ class Role(Base):
 
 class Permission(Base):
     __tablename__ = "permissions"
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     code: Mapped[str] = mapped_column(String(128), unique=True)
 
 
@@ -93,7 +105,7 @@ class LocalUserCredential(Base):
 
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
@@ -104,7 +116,7 @@ class KnowledgeBase(Base):
 
 class Document(Base):
     __tablename__ = "documents"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     knowledge_base_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
     title: Mapped[str] = mapped_column(String(500))
@@ -121,7 +133,7 @@ class Document(Base):
 
 class DocumentVersion(Base):
     __tablename__ = "document_versions"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
     version: Mapped[int] = mapped_column(Integer)
     source_object_key: Mapped[str] = mapped_column(String(1000))
@@ -145,7 +157,7 @@ class DocumentGrant(Base):
 
 class Chunk(Base):
     __tablename__ = "chunks"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     document_version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
     chunk_index: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
@@ -159,7 +171,7 @@ class Chunk(Base):
 
 class IngestionJob(Base):
     __tablename__ = "ingestion_jobs"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     document_version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
     stage: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
@@ -179,10 +191,10 @@ class IngestionJob(Base):
 
 class EventOutbox(Base):
     __tablename__ = "event_outbox"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     event_type: Mapped[str] = mapped_column(String(128), index=True)
     aggregate_type: Mapped[str] = mapped_column(String(128))
-    aggregate_id: Mapped[str] = mapped_column(String(36), index=True)
+    aggregate_id: Mapped[str] = mapped_column(BusinessId(), index=True)
     payload: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -194,12 +206,12 @@ class EventOutbox(Base):
 
 class IngestionDeadLetter(Base):
     __tablename__ = "ingestion_dead_letters"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    event_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
+    event_id: Mapped[str | None] = mapped_column(BusinessId(), index=True)
     event_type: Mapped[str | None] = mapped_column(String(128), index=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), index=True)
-    document_id: Mapped[str | None] = mapped_column(String(36), index=True)
-    document_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    document_id: Mapped[str | None] = mapped_column(BusinessId(), index=True)
+    document_version_id: Mapped[str | None] = mapped_column(BusinessId(), index=True)
     trace_id: Mapped[str | None] = mapped_column(String(64), index=True)
     error_code: Mapped[str] = mapped_column(String(128))
     error_message: Mapped[str] = mapped_column(Text)
@@ -209,7 +221,7 @@ class IngestionDeadLetter(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     subject: Mapped[str] = mapped_column(String(256), index=True)
     action: Mapped[str] = mapped_column(String(128), index=True)
@@ -223,7 +235,7 @@ class AuditEvent(Base):
 
 class QueryEvent(Base):
     __tablename__ = "query_events"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     subject: Mapped[str] = mapped_column(String(256), index=True)
     query: Mapped[str] = mapped_column(Text)
@@ -235,10 +247,10 @@ class QueryEvent(Base):
 
 class AnswerFeedback(Base):
     __tablename__ = "answer_feedback"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     subject: Mapped[str] = mapped_column(String(256), index=True)
-    answer_id: Mapped[str] = mapped_column(String(36), index=True)
+    answer_id: Mapped[str] = mapped_column(BusinessId(), index=True)
     liked: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     __table_args__ = (
@@ -248,7 +260,7 @@ class AnswerFeedback(Base):
 
 class KnowledgeRelation(Base):
     __tablename__ = "knowledge_relations"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     document_version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
     chunk_index: Mapped[int] = mapped_column(Integer)
@@ -263,7 +275,7 @@ class KnowledgeRelation(Base):
 
 class EntityAlias(Base):
     __tablename__ = "entity_aliases"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(BusinessId(), primary_key=True, default=new_id)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     document_version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
     canonical: Mapped[str] = mapped_column(String(255), index=True)
@@ -279,6 +291,18 @@ class EntityAlias(Base):
     __table_args__ = (UniqueConstraint("document_version_id", "canonical", "alias",
                                        name="uq_entity_alias_version_mapping"),)
 
+
+
+# Foreign-key columns inherit the business type from their referenced column.
+for _table in Base.metadata.tables.values():
+    for _column in _table.columns:
+        if isinstance(_column.type, BusinessId):
+            _name = _column.name
+            _table.append_constraint(CheckConstraint(
+                f"length({_name}) <= 19 AND CAST({_name} AS BIGINT) > 0 "
+                f"AND CAST(CAST({_name} AS BIGINT) AS VARCHAR) = {_name}",
+                name=f"ck_{_table.name}_{_name}_business_id",
+            ))
 
 
 def init_db():

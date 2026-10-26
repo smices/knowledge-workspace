@@ -88,3 +88,7 @@ localidc 测试使用 issuer `https://idp.is1.snnc.cc/realms/openidentity`；生
 - [ ] 按 OpenIdentity 生产契约补齐并验收 `id_token_hint`、back-channel logout/revocation 和密钥轮换。
 - [ ] 完成新 API Service 严格 claims/scope 接入与真实机器客户端验收。
 - [ ] localidc 应用部署与测试已授权；生产部署和不可变镜像验收仍待单独授权。
+
+## localidc 本轮登记结果（2026-10-26）
+
+已获授权登记知识库浏览器客户端及专属 global-ID 机器客户端，目标 namespace 为 `knowledge`。现网 OpenIdentity 0.2.101 管理 API 与当前正式合同核对发现：企业 Provider 列表为空；机器客户端跨资源 audience 仅支持 configuration-service 特例，尚不支持 global-id-service。因此两项登记未执行，不直接调用 Keycloak Admin API 绕过控制平面，也不借用平台已有客户端。平台补齐对应登记能力后再完成授权、Secret 注入和真实登录／发号验收。

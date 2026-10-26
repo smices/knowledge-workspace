@@ -45,7 +45,9 @@ def test_initial_local_admin_manages_idp_access_without_profile_state(monkeypatc
     origin = {"Origin": "http://testserver"}
     assert client.put("/api/v1/admin/members/idp-user-1/roles", json={"roles": ["finance"]}, headers=origin).json()["roles"] == ["finance"]
     assert client.put("/api/v1/admin/members/idp-user-1/status", json={"status": "disabled"}, headers=origin).json()["status"] == "disabled"
-    assert client.put(f"/api/v1/admin/members/{local_admin.LOCAL_ADMIN_ID}/status", json={"status": "disabled"}, headers=origin).status_code == 400
+    admin_id = local_admin.authenticate_local_admin("installer", "local-admin-password").subject
+    assert admin_id.isdecimal()
+    assert client.put(f"/api/v1/admin/members/{admin_id}/status", json={"status": "disabled"}, headers=origin).status_code == 400
 
     disabled = TestClient(main.app)
     disabled.cookies.set(settings.identity_session_cookie, _sign_session(Principal("idp-user-1", "tenant-1", frozenset())))

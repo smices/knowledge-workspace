@@ -21,3 +21,6 @@
 - Shared dependencies are owned and provided by the base-plat Kubernetes `infra` group/namespace. Reuse only after verifying the service major version and runtime/driver compatibility. Report missing or incompatible components before considering installation; never deploy duplicates or modify shared infrastructure from this business repository.
 - OpenIdentity user identity comes from localidc (`https://idp.is1.snnc.cc/realms/openidentity`) for local testing and production IdP (`https://idp.snnc.cc/realms/openidentity`) for production. Preserve local administrator/local credentials and application RBAC; do not handle or synchronize IdP passwords.
 - New persisted business IDs must use the shared `global-id-service`; until application integration is complete, business writes that allocate IDs locally are not deployment-ready.
+
+- Application Kubernetes namespace is `knowledge`; infrastructure remains platform-owned.
+- This project is unpublished: retire UUID business IDs without runtime compatibility. Migrate existing business keys and references using authority-allocated decimal int64 strings; retain data/recovery evidence and opaque external identity contracts.

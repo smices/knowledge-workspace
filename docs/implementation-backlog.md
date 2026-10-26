@@ -39,7 +39,7 @@
 | OPS-01 | 容量与灾备验收 | 待验证 | 1500 员工与 AI worker 混合压测、并发入库、积压恢复、备份恢复；明确流量及网关配额后在授权环境执行 |
 | OPS-02 | 生产身份与部署验收 | 待验证 | 正式 IdP client/callback/Secret、真实登录及撤销、多副本与基础服务 HA；不自动修改外部系统 |
 | OPS-03 | 共享基础设施兼容与验收 | 待验证 | 复用 base-plat 提供的共享服务；验证驱动/配置、迁移兼容性及应用连接。未发现 Knowledge 服务；缺失/不兼容项先报告，不在业务仓库部署副本或修改 infra。当前检查到 PostgreSQL 16.15/18.6、Redis 7.4.11、Qdrant 1.15.4、Kafka 4.3.1、SeaweedFS 4.48；Kubernetes 与 Compose 目标为 PostgreSQL 18 / Kafka 4；升级需保留既有数据，禁止直接以升级版本启动旧数据卷。Qdrant 1.13 client 对 1.15.4 server 的兼容性待验证 |
-| ID-01 | 业务 ID authority | 阻塞部署写入验收 | 所有新持久化业务 ID 通过共享 `global-id-service`；验证调用方、并发分配、失败拒绝写入和重放边界。服务位于 `sn-base-plat` 命名空间，Service 为 `global-id-service`（8090/8091/8092）；应用仍使用 UUID 业务 ID，完成接入前不得声称写路径符合要求 |
+| ID-01 | 业务 ID authority | 代码与数据库迁移完成，真实发号待授权接入 | 所有新持久化业务 ID 通过共享 `global-id-service`；验证调用方、并发分配、失败拒绝写入和重放边界。服务位于 `sn-base-plat` 命名空间，Service 为 `global-id-service`（8090/8091/8092）；应用业务 ID 已改由共享服务分配并拒绝 UUID；独立机器 audience 尚未获平台支持，真实发号和完整写链路未验收 |
 | M2M-03 | MCP 接口 | 未实现 | MCP transport、工具契约、输入/输出 schema、授权与错误边界；当前无 MCP 实现。复用已有授权 API 能力并纳入安全验收 |
 
 当前保护上限和已有验证见 [容量验收说明](capacity-readiness.md)。复杂 Agent 编排、自动工作流设计器和自研数据库不纳入本轮必做范围。
@@ -52,8 +52,8 @@
 | 文档替换 | `PUT /api/v1/documents/{document_id}`，管理员限定 | 继续验证授权、审计与失败恢复 |
 | OIDC 机器 Bearer | 基础签名/issuer/audience/subject/过期校验和本地角色映射 | 严格 `typ`/`azp`/tenant/scope 尚缺，见 M2M-01 |
 | MCP | 未发现实现 | 见 M2M-03 |
-| 业务 ID authority | 共享 global-id-service 已提供；应用仍以 UUID 生成业务 ID | 写入接入与故障/并发验证未完成，见 ID-01 |
-| Kubernetes 共享依赖 | 已检查基础服务版本；未发现 Knowledge 服务 | 兼容性和应用连接尚未验收，见 OPS-03 |
+| 业务 ID authority | 共享 global-id-service 2/2 可用；调用方及数据库已改为严格十进制 ID | 模拟 authority 的故障／迁移验证通过；真实机器授权与写入联调待完成，见 ID-01 |
+| Kubernetes 共享依赖 | 已检查基础服务版本；knowledge namespace 与专属 PG18 数据库已建立，应用 Pod 尚未部署 | 兼容性和应用连接尚未验收，见 OPS-03 |
 
 ## 交付记录
 
@@ -75,3 +75,15 @@
   - 认证／权限／入库聚焦测试 48 项通过；事件与重试测试 3 项通过。隔离 PostgreSQL 18.6 的并发迁移测试 1 项通过，实例已清理。
   - aiokafka 0.14.0 对共享 Kafka 4.3.1 的 bootstrap、ApiVersions 与 metadata 读取成功；没有创建 topic 或发送消息，不等于生产／消费全链路验收。
   - Compose 配置、Kubernetes 渲染、Python 编译和 `uv lock --check` 通过。本机 Docker daemon 不可用，未启动完整 Compose；未迁移旧业务数据、部署应用或修改 infra。MCP、完整机器 claims/scope、global-id-service 接入仍未完成。
+
+- 2026-10-26（部署与发号改造）：应用 namespace 按要求改为 `knowledge`；复用 infra PostgreSQL 18.6，创建专属数据库及最小权限登录，连接仅保存在 Kubernetes Secret 和忽略的私有文件中。
+  - 创建前实查目标数据库不存在；新库迁移前 public 表数为 0。已执行前向 Alembic 迁移，未向业务表写入本地生成 ID。
+  - 旧业务 ID 通过共享 authority 的批量接口分配后在事务内重映射；接口、ORM 和数据库约束拒绝 UUID，无运行时双格式兼容。旧外部 subject 与原件对象定位符保留其外部契约。
+  - 当前 IdP 管理 API 与正式合同核对确认：新机器登记仅支持自身 audience（另有 configuration-service 特例），未支持独立客户端访问 global-id-service；企业 Provider 列表为空。未绕过控制平面、借用其他客户端或创建错误授权。
+  - 现有模型配置指向不可达的本机模型端点，专属 S3 授权和域名准入也未完成；应用 Pod 尚未发布。现网未发现该项目旧库；本机通用 deploy 卷归属未证实，保持不动，不声称已完成旧业务数据搬迁。
+
+  - 实际数据库已到 `a2b3c4d5e6f7`；读回确认业务列为19字符，外部租户列保留128字符，local_user/local_admin 约束已生效。新库无业务文档；没有伪造发号记录填充业务数据。
+  - 隔离 PG18 的10项迁移／并发／schema 验证通过。全套本地回归156项通过、14项因外部依赖等条件跳过；剩余1项是旧管理员测试夹具，改为从模拟 authority 取得 ID 后单项复验通过。真实 pipeline 不使用模拟发号客户端，必须配置独立机器凭据。
+  - 存储桶检查改为单桶 head，不要求应用列举全部共享桶；覆盖存在、缺失、403和服务故障。镜像上下文采用白名单，排除本地凭据、虚拟环境和临时合同源码。
+
+  - 镜像 `sn-knowledge:localidc-1ba9b1c9c3fd6f63` 已按固定 Python digest 和 uv.lock 构建为 amd64；断网容器内模块导入、迁移 head 打包及缺少 authority 配置拒绝发号检查通过。镜像未导入 localidc 节点，应用 Deployment 未应用；部署候选清单已校验 namespace、镜像、数据库 Secret 和客户端标签。

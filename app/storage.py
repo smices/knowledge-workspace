@@ -15,8 +15,11 @@ s3 = boto3.client("s3", endpoint_url=settings.s3_endpoint_url,
                                 retries={"total_max_attempts": 2, "mode": "standard"}))
 
 def ensure_bucket():
-    buckets = [b["Name"] for b in s3.list_buckets().get("Buckets", [])]
-    if settings.s3_bucket not in buckets:
+    try:
+        s3.head_bucket(Bucket=settings.s3_bucket)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") not in {"404", "NoSuchBucket", "NotFound"}:
+            raise
         s3.create_bucket(Bucket=settings.s3_bucket)
 
 def put_file(key: str, body, content_type: str):

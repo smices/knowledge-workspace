@@ -2,8 +2,11 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: knowledge-app-config
-  namespace: knowledge-system
+  namespace: knowledge
 data:
+  GLOBAL_ID_URL: REPLACE_WITH_GLOBAL_ID_URL
+  GLOBAL_ID_TOKEN_URL: REPLACE_WITH_GLOBAL_ID_TOKEN_URL
+  GLOBAL_ID_ALLOW_HTTP: "false"
   QDRANT_URL: REPLACE_WITH_QDRANT_URL
   QDRANT_COLLECTION: knowledge_chunks_hybrid_v1
   KAFKA_BOOTSTRAP_SERVERS: REPLACE_WITH_KAFKA_BOOTSTRAP_SERVERS
@@ -37,14 +40,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: knowledge-api
-  namespace: knowledge-system
+  namespace: knowledge
 spec:
   replicas: 2
   selector:
     matchLabels: {app: knowledge-api}
   template:
     metadata:
-      labels: {app: knowledge-api}
+      labels: {app: knowledge-api, platform.snnc.cc/global-id-client: "true", platform.snnc.cc/seaweedfs-client: "true"}
     spec:
       terminationGracePeriodSeconds: 150
       topologySpreadConstraints:
@@ -98,7 +101,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: knowledge-api
-  namespace: knowledge-system
+  namespace: knowledge
 spec:
   selector: {app: knowledge-api}
   ports: [{name: http, port: 8000, targetPort: http}]
@@ -107,14 +110,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: knowledge-worker
-  namespace: knowledge-system
+  namespace: knowledge
 spec:
   replicas: 2
   selector:
     matchLabels: {app: knowledge-worker}
   template:
     metadata:
-      labels: {app: knowledge-worker}
+      labels: {app: knowledge-worker, platform.snnc.cc/global-id-client: "true", platform.snnc.cc/seaweedfs-client: "true"}
     spec:
       terminationGracePeriodSeconds: 150
       topologySpreadConstraints:
@@ -157,7 +160,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: knowledge-api
-  namespace: knowledge-system
+  namespace: knowledge
 spec:
   minAvailable: 1
   selector:
@@ -167,7 +170,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: knowledge-worker
-  namespace: knowledge-system
+  namespace: knowledge
 spec:
   minAvailable: 1
   selector:

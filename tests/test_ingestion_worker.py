@@ -31,9 +31,9 @@ def setup(monkeypatch):
     monkeypatch.setattr(settings, "embedding_dimensions", 2)
     with Session() as session:
         session.add_all([db.Tenant(id="tenant", name="tenant"), db.Principal(id="owner", tenant_id="tenant")])
-        document = db.Document(id="document", tenant_id="tenant", title="doc.txt", created_by="owner", version=1, status="queued")
+        document = db.Document(id="401", tenant_id="tenant", title="doc.txt", created_by="owner", version=1, status="queued")
         version = db.DocumentVersion(
-            id="version", document_id="document", version=1, source_object_key="tenant/source",
+            id="402", document_id="401", version=1, source_object_key="tenant/source",
             source_filename="doc.txt", content_type="text/plain", source_hash="hash", created_by="owner",
         )
         session.add_all([document, version])
@@ -55,11 +55,36 @@ def test_worker_publishes_only_complete_embedding_batch(monkeypatch):
     assert result == "success"
     assert len(qdrant.upserted) == 1
     with Session() as session:
-        document = session.get(db.Document, "document")
-        version = session.get(db.DocumentVersion, "version")
+        document = session.get(db.Document, "401")
+        version = session.get(db.DocumentVersion, "402")
+        chunks = session.scalars(select(db.Chunk).where(db.Chunk.document_version_id == "402")).all()
         assert document.status == "ready"
         assert version.status == "ready"
-        assert session.scalar(select(db.Chunk).where(db.Chunk.document_version_id == "version")) is not None
+        assert [int(chunk.id) for chunk in chunks] == [point.id for point in qdrant.upserted[0][0][1]]
+    point_count = len(qdrant.upserted)
+    assert worker.handle_event(payload) == "obsolete"
+    assert len(qdrant.upserted) == point_count
+    engine.dispose()
+
+
+def test_global_id_failure_precedes_qdrant_mutation(monkeypatch):
+    Session, engine, payload = setup(monkeypatch)
+    qdrant = FakeQdrant()
+    monkeypatch.setattr(worker, "client", qdrant)
+
+    def unavailable(_count):
+        raise RuntimeError("authority unavailable")
+
+    monkeypatch.setattr(worker, "new_ids", unavailable)
+    result = worker.handle_event(
+        payload,
+        embedder=lambda texts: [[0.1, 0.2] for _ in texts],
+        loader=lambda key: b"first paragraph\nsecond paragraph",
+    )
+    assert result == "retry"
+    assert qdrant.deleted == [] and qdrant.upserted == []
+    with Session() as session:
+        assert session.scalar(select(db.Chunk)) is None
     engine.dispose()
 
 
@@ -94,8 +119,8 @@ def test_partial_embeddings_persist_retry_then_dead_letter(monkeypatch):
 def test_obsolete_and_canceled_events_do_not_embed(monkeypatch):
     Session, engine, payload = setup(monkeypatch)
     with Session() as session:
-        document = session.get(db.Document, "document")
-        version = session.get(db.DocumentVersion, "version")
+        document = session.get(db.Document, "401")
+        version = session.get(db.DocumentVersion, "402")
         newer = enqueue_document(session, document, version)
         document.status = "canceled"
         session.commit()
@@ -117,15 +142,15 @@ def test_delete_event_tombstones_metadata_and_qdrant_by_version(monkeypatch):
     qdrant = FakeQdrant()
     monkeypatch.setattr(worker, "client", qdrant)
     with Session() as session:
-        document = session.get(db.Document, "document")
-        version = session.get(db.DocumentVersion, "version")
+        document = session.get(db.Document, "401")
+        version = session.get(db.DocumentVersion, "402")
         document.status = "deleting"
         delete_event = enqueue_document(session, document, version, event_type="document.delete")
         session.commit()
     assert worker.handle_event(delete_event) == "success"
     with Session() as session:
-        assert session.get(db.Document, "document").status == "deleted"
-        assert session.get(db.DocumentVersion, "version").status == "deleted"
+        assert session.get(db.Document, "401").status == "deleted"
+        assert session.get(db.DocumentVersion, "402").status == "deleted"
     filter_repr = repr(qdrant.deleted[0])
     assert "document_version_id" in filter_repr
     engine.dispose()
@@ -154,8 +179,8 @@ def test_stale_failure_does_not_obsolete_new_generation(monkeypatch):
     Session, engine, payload = setup(monkeypatch)
     first_claim = worker._mark_processing(payload)
     with Session() as session:
-        document = session.get(db.Document, "document")
-        version = session.get(db.DocumentVersion, "version")
+        document = session.get(db.Document, "401")
+        version = session.get(db.DocumentVersion, "402")
         replacement = enqueue_document(session, document, version)
         session.commit()
     assert replacement["job_generation"] == 2
@@ -244,8 +269,8 @@ def test_ambiguous_index_claim_commits_durable_retry(monkeypatch):
 def test_ambiguous_delete_claim_commits_durable_retry(monkeypatch):
     Session, engine, payload = setup(monkeypatch)
     with Session() as session:
-        document = session.get(db.Document, "document")
-        version = session.get(db.DocumentVersion, "version")
+        document = session.get(db.Document, "401")
+        version = session.get(db.DocumentVersion, "402")
         document.status = "deleting"
         delete_event = enqueue_document(session, document, version, event_type="document.delete")
         session.commit()
@@ -272,8 +297,8 @@ def test_delete_failure_attempts_are_persisted_before_qdrant(monkeypatch):
     qdrant = BrokenQdrant()
     monkeypatch.setattr(worker, "client", qdrant)
     with Session() as session:
-        document = session.get(db.Document, "document")
-        version = session.get(db.DocumentVersion, "version")
+        document = session.get(db.Document, "401")
+        version = session.get(db.DocumentVersion, "402")
         document.status = "deleting"
         delete_event = enqueue_document(session, document, version, event_type="document.delete")
         session.commit()

@@ -17,13 +17,13 @@ def store(monkeypatch):
     with session() as s:
         s.add(db.Tenant(id="tenant", name="tenant"))
         s.add(db.Principal(id="reader", tenant_id="tenant"))
-        s.add(db.Role(id="hr-role", tenant_id="tenant", name="hr"))
-        s.add(db.Document(id="doc", tenant_id="tenant", title="restricted", created_by="reader", status="ready"))
-        s.add(db.DocumentVersion(id="version", document_id="doc", version=1, source_object_key="synthetic",
+        s.add(db.Role(id="1003", tenant_id="tenant", name="hr"))
+        s.add(db.Document(id="1001", tenant_id="tenant", title="restricted", created_by="reader", status="ready"))
+        s.add(db.DocumentVersion(id="1002", document_id="1001", version=1, source_object_key="synthetic",
                                  source_filename="sample.txt", content_type="text/plain", source_hash="synthetic",
                                  created_by="reader", status="ready"))
-        s.add(db.DocumentGrant(document_id="doc", role_id="hr-role"))
-        s.add(db.Chunk(id="chunk", document_version_id="version", chunk_index=0,
+        s.add(db.DocumentGrant(document_id="1001", role_id="1003"))
+        s.add(db.Chunk(id="1004", document_version_id="1002", chunk_index=0,
                       content="synthetic restricted content", content_hash="synthetic"))
         s.commit()
     yield session
@@ -41,23 +41,23 @@ def test_document_routes_deny_ungranted_callers(store, tenant, roles):
     client = caller(tenant, frozenset(roles))
     assert client.get("/api/v1/documents").json()["items"] == []
     for suffix in ("status", "content"):
-        assert client.get(f"/api/v1/documents/doc/{suffix}").status_code == 404
+        assert client.get(f"/api/v1/documents/1001/{suffix}").status_code == 404
 
 
 def test_role_union_revocation_and_deletion(store):
     client = caller(roles=frozenset({"finance", "hr"}))
-    assert client.get("/api/v1/documents/doc/content").json()["content"] == "synthetic restricted content"
+    assert client.get("/api/v1/documents/1001/content").json()["content"] == "synthetic restricted content"
     assert len(client.get("/api/v1/documents").json()["items"]) == 1
     with store() as s:
         s.query(db.DocumentGrant).delete()
         s.commit()
-    assert client.get("/api/v1/documents/doc/content").status_code == 404
+    assert client.get("/api/v1/documents/1001/content").status_code == 404
     with store() as s:
-        s.add(db.DocumentGrant(document_id="doc", role_id="hr-role"))
-        s.get(db.Document, "doc").status = "deleted"
+        s.add(db.DocumentGrant(document_id="1001", role_id="1003"))
+        s.get(db.Document, "1001").status = "deleted"
         s.commit()
-    assert client.get("/api/v1/documents/doc/content").status_code == 404
-    assert client.get("/api/v1/documents/doc/status").status_code == 404
+    assert client.get("/api/v1/documents/1001/content").status_code == 404
+    assert client.get("/api/v1/documents/1001/status").status_code == 404
     assert client.get("/api/v1/documents").json()["items"] == []
 
 
@@ -75,37 +75,37 @@ def test_document_grant_management_syncs_qdrant_and_denies_cross_tenant(store, m
     vector = Vector()
     monkeypatch.setattr(main, "vector_client", vector)
     admin = caller(roles=frozenset({"admin"}))
-    assert admin.get("/api/v1/admin/documents/doc/grants").json()["roles"] == ["hr"]
-    changed = admin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["finance"]})
+    assert admin.get("/api/v1/admin/documents/1001/grants").json()["roles"] == ["hr"]
+    changed = admin.put("/api/v1/admin/documents/1001/grants", json={"roles": ["finance"]})
     assert changed.status_code == 200
     assert changed.json()["roles"] == ["finance"]
     assert vector.calls == [{"allowed_roles": []}, {"allowed_roles": ["finance"]}]
     with store() as s:
-        assert main._document_grant_roles(s, "doc", "tenant") == {"finance"}
+        assert main._document_grant_roles(s, "1001", "tenant") == {"finance"}
         assert s.get(db.Tenant, "tenant").knowledge_revision == 1
         assert s.query(db.AuditEvent).filter_by(action="document.grants.update").count() == 1
-    assert caller(roles=frozenset({"finance"})).get("/api/v1/documents/doc/content").status_code == 200
-    assert caller(roles=frozenset({"hr"})).get("/api/v1/documents/doc/content").status_code == 404
+    assert caller(roles=frozenset({"finance"})).get("/api/v1/documents/1001/content").status_code == 200
+    assert caller(roles=frozenset({"hr"})).get("/api/v1/documents/1001/content").status_code == 404
 
     vector.fail = True
     admin = caller(roles=frozenset({"admin"}))
-    failed = admin.put("/api/v1/admin/documents/doc/grants", json={"roles": []})
+    failed = admin.put("/api/v1/admin/documents/1001/grants", json={"roles": []})
     assert failed.status_code == 503
     with store() as s:
-        assert main._document_grant_roles(s, "doc", "tenant") == {"finance"}
-    assert caller("other", frozenset({"admin"})).get("/api/v1/admin/documents/doc/grants").status_code == 404
+        assert main._document_grant_roles(s, "1001", "tenant") == {"finance"}
+    assert caller("other", frozenset({"admin"})).get("/api/v1/admin/documents/1001/grants").status_code == 404
 
     vector.fail = False
     vector.fail_on = vector.attempts + 2
     admin = caller(roles=frozenset({"admin"}))
-    delayed = admin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["hr"]})
+    delayed = admin.put("/api/v1/admin/documents/1001/grants", json={"roles": ["hr"]})
     assert delayed.status_code == 503
     with store() as s:
-        assert main._document_grant_roles(s, "doc", "tenant") == {"hr"}
-    assert caller(roles=frozenset({"finance"})).get("/api/v1/documents/doc/content").status_code == 404
+        assert main._document_grant_roles(s, "1001", "tenant") == {"hr"}
+    assert caller(roles=frozenset({"finance"})).get("/api/v1/documents/1001/content").status_code == 404
     vector.fail_on = None
     admin = caller(roles=frozenset({"admin"}))
-    assert admin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["hr"]}).status_code == 200
+    assert admin.put("/api/v1/admin/documents/1001/grants", json={"roles": ["hr"]}).status_code == 200
 
 
 def test_write_origin_gate_rejects_browser_requests_but_preserves_bearer_api_calls(store, monkeypatch):
@@ -115,17 +115,17 @@ def test_write_origin_gate_rejects_browser_requests_but_preserves_bearer_api_cal
 
     monkeypatch.setattr(main, "vector_client", Vector())
     no_origin = caller(roles=frozenset({"admin"}), headers={})
-    assert no_origin.put("/api/v1/admin/documents/doc/grants", json={"roles": ["finance"]}).status_code == 403
+    assert no_origin.put("/api/v1/admin/documents/1001/grants", json={"roles": ["finance"]}).status_code == 403
     bearer = caller(roles=frozenset({"admin"}), headers={"Authorization": "Bearer synthetic"})
-    assert bearer.put("/api/v1/admin/documents/doc/grants", json={"roles": ["finance"]}).status_code == 200
+    assert bearer.put("/api/v1/admin/documents/1001/grants", json={"roles": ["finance"]}).status_code == 200
 
 
 def test_pagination_bounds_and_admin_metadata_do_not_grant_content(store):
     client = caller(roles=frozenset({"admin"}))
-    assert client.get("/api/v1/admin/documents?limit=1").json()["items"][0]["id"] == "doc"
+    assert client.get("/api/v1/admin/documents?limit=1").json()["items"][0]["id"] == "1001"
     assert client.get("/api/v1/admin/documents?offset=1").json()["total"] == 1
     assert client.get("/api/v1/admin/documents?offset=1").json()["items"] == []
-    assert client.get("/api/v1/documents/doc/content").status_code == 404
+    assert client.get("/api/v1/documents/1001/content").status_code == 404
     assert client.get("/api/v1/documents?limit=201").status_code == 422
     assert client.get("/api/v1/documents?offset=-1").status_code == 422
 
@@ -145,13 +145,13 @@ def test_cached_citations_require_current_ready_and_authorized_version(store, mo
     monkeypatch.setattr(main, "knowledge_revision", lambda _: 7)
     monkeypatch.setattr(main.settings, "auth_mode", "jwt")
     principal = Principal("reader", "tenant", frozenset({"hr"}))
-    result = {"citations": [{"document_id": "doc", "document_version": 1}]}
+    result = {"citations": [{"document_id": "1001", "document_version": 1}]}
     main.validate_query_result(principal, 7, result)
     main.validate_query_result(principal, 6, result)  # Unrelated ingestion does not invalidate live evidence.
     with pytest.raises(HTTPException, match="Evidence access changed"):
         main.validate_query_result(Principal("reader", "tenant", frozenset({"finance"})), 7, result)
     with store() as s:
-        s.get(db.Document, "doc").version = 2
+        s.get(db.Document, "1001").version = 2
         s.commit()
     with pytest.raises(HTTPException, match="Evidence access changed"):
         main.validate_query_result(principal, 7, result)
@@ -159,10 +159,10 @@ def test_cached_citations_require_current_ready_and_authorized_version(store, mo
 
 def test_late_graph_cannot_recreate_deleted_relationships(store):
     with store() as s:
-        s.get(db.Document, "doc").status = "deleted"
+        s.get(db.Document, "1001").status = "deleted"
         s.commit()
     main.persist_relationships(Principal("reader", "tenant", frozenset({"hr"})),
-                              [{"document_id": "doc", "document_version": 1, "chunk_index": 0}],
+                              [{"document_id": "1001", "document_version": 1, "chunk_index": 0}],
                               [{"source": "a", "target": "b", "label": "links", "excerpt": "synthetic", "evidence": 1}])
     with store() as s:
         assert s.query(db.KnowledgeRelation).count() == 0
@@ -175,15 +175,15 @@ def test_unrelated_revision_is_allowed_but_withdrawn_alias_evidence_is_not(store
     monkeypatch.setattr(main, "knowledge_revision", lambda _: 9)
     monkeypatch.setattr(main.settings, "auth_mode", "jwt")
     with store() as s:
-        s.add(db.EntityAlias(id="alias", tenant_id="tenant", document_version_id="version",
+        s.add(db.EntityAlias(id="1005", tenant_id="tenant", document_version_id="1002",
                              canonical="alpha", alias="beta", chunk_index=0, excerpt="alpha beta", status="approved"))
         s.commit()
     principal = Principal("reader", "tenant", frozenset({"hr"}))
-    result = {"citations": [{"document_id": "doc", "document_version": 1}],
-              "entity_bindings": [{"alias_id": "alias", "evidence": [1]}]}
+    result = {"citations": [{"document_id": "1001", "document_version": 1}],
+              "entity_bindings": [{"alias_id": "1005", "evidence": [1]}]}
     main.validate_query_result(principal, 7, result)
     with store() as s:
-        alias = s.get(db.EntityAlias, "alias")
+        alias = s.get(db.EntityAlias, "1005")
         if change == "removed":
             s.delete(alias)
         else:
@@ -204,49 +204,49 @@ def test_revision_outage_does_not_reuse_an_unknown_cache_scope(monkeypatch):
 
 def test_alias_approval_and_revision_share_one_transaction(store, monkeypatch):
     with store() as s:
-        s.add(db.EntityAlias(id="alias", tenant_id="tenant", document_version_id="version",
+        s.add(db.EntityAlias(id="1005", tenant_id="tenant", document_version_id="1002",
                              canonical="alpha", alias="beta", chunk_index=0, excerpt="alpha beta"))
         s.commit()
     principal = Principal("reader", "tenant", frozenset({"admin", "hr"}))
-    main.update_entity_alias("alias", main.EntityAliasStatusRequest(status="approved"), principal)
+    main.update_entity_alias("1005", main.EntityAliasStatusRequest(status="approved"), principal)
     with store() as s:
         assert s.get(db.Tenant, "tenant").knowledge_revision == 1
-        assert s.get(db.EntityAlias, "alias").status == "approved"
+        assert s.get(db.EntityAlias, "1005").status == "approved"
     def unavailable(*args):
         raise RuntimeError("revision unavailable")
     monkeypatch.setattr(main, "bump_knowledge_revision", unavailable)
     with pytest.raises(RuntimeError):
-        main.update_entity_alias("alias", main.EntityAliasStatusRequest(status="rejected"), principal)
+        main.update_entity_alias("1005", main.EntityAliasStatusRequest(status="rejected"), principal)
     with store() as s:
-        assert s.get(db.EntityAlias, "alias").status == "approved"
+        assert s.get(db.EntityAlias, "1005").status == "approved"
 
 
 def test_admin_evidence_routes_require_content_grant_and_current_version(store):
     with store() as s:
-        s.add(db.Document(id="11111111-1111-1111-1111-111111111111", tenant_id="tenant",
+        s.add(db.Document(id="2001", tenant_id="tenant",
                           title="restricted creation", created_by="reader", status="ready"))
-        s.add(db.DocumentVersion(id="creation-version", document_id="11111111-1111-1111-1111-111111111111",
+        s.add(db.DocumentVersion(id="2002", document_id="2001",
                                  version=1, source_object_key="synthetic", source_filename="sample.txt",
                                  content_type="text/plain", source_hash="synthetic", created_by="reader", status="ready"))
-        s.add(db.DocumentGrant(document_id="11111111-1111-1111-1111-111111111111", role_id="hr-role"))
-        s.add(db.Chunk(document_version_id="creation-version", chunk_index=0,
+        s.add(db.DocumentGrant(document_id="2001", role_id="1003"))
+        s.add(db.Chunk(document_version_id="2002", chunk_index=0,
                        content="alpha beta", content_hash="synthetic"))
-        s.add(db.EntityAlias(id="alias", tenant_id="tenant", document_version_id="version",
+        s.add(db.EntityAlias(id="1005", tenant_id="tenant", document_version_id="1002",
                              canonical="alpha", alias="beta", chunk_index=0, excerpt="private excerpt"))
-        s.add(db.KnowledgeRelation(tenant_id="tenant", document_version_id="version", chunk_index=0,
+        s.add(db.KnowledgeRelation(tenant_id="tenant", document_version_id="1002", chunk_index=0,
                                    source="alpha", target="beta", relation="links", excerpt="private excerpt"))
         s.commit()
     client = caller(roles=frozenset({"admin"}))
     for path in ("relations", "entity-aliases"):
         assert client.get(f"/api/v1/admin/{path}").json()["items"] == []
-    assert client.put("/api/v1/admin/entity-aliases/alias", json={"status": "approved"}).status_code == 404
-    assert client.post("/api/v1/admin/entity-aliases", json={"document_id": "11111111-1111-1111-1111-111111111111", "chunk_index": 0,
+    assert client.put("/api/v1/admin/entity-aliases/1005", json={"status": "approved"}).status_code == 404
+    assert client.post("/api/v1/admin/entity-aliases", json={"document_id": "2001", "chunk_index": 0,
                                                            "canonical": "alpha", "alias": "beta"}).status_code == 404
     client = caller(roles=frozenset({"admin", "hr"}))
     for path in ("relations", "entity-aliases"):
         assert len(client.get(f"/api/v1/admin/{path}").json()["items"]) == 1
     with store() as s:
-        s.get(db.Document, "doc").version = 2
+        s.get(db.Document, "1001").version = 2
         s.commit()
     for path in ("relations", "entity-aliases"):
         assert client.get(f"/api/v1/admin/{path}").json()["items"] == []
@@ -254,20 +254,20 @@ def test_admin_evidence_routes_require_content_grant_and_current_version(store):
 
 def test_delete_retry_requeues_exhausted_cleanup_without_stealing_active_work(store):
     principal = Principal("reader", "tenant", frozenset({"admin"}))
-    assert main.delete_document("doc", principal)["status"] == "deleting"
+    assert main.delete_document("1001", principal)["status"] == "deleting"
     with store() as s:
         job = s.query(db.IngestionJob).filter_by(stage="delete").one()
         job.status = "processing"
         s.commit()
-    assert main.delete_document("doc", principal)["status"] == "deleting"
+    assert main.delete_document("1001", principal)["status"] == "deleting"
     with store() as s:
         job = s.query(db.IngestionJob).one()
         assert job.generation == 1
         assert s.query(db.EventOutbox).count() == 1
         job.status, job.attempt = "dead_letter", 3
-        s.get(db.DocumentVersion, "version").status = "failed"
+        s.get(db.DocumentVersion, "1002").status = "failed"
         s.commit()
-    assert main.delete_document("doc", principal)["status"] == "deleting"
+    assert main.delete_document("1001", principal)["status"] == "deleting"
     with store() as s:
         job = s.query(db.IngestionJob).one()
         assert (job.status, job.attempt, job.generation) == ("queued", 0, 2)

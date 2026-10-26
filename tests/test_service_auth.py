@@ -58,7 +58,7 @@ def service_store(monkeypatch):
         store.add(db.Tenant(id="tenant-1", name="Tenant 1"))
         store.add(db.Principal(id="service-1", tenant_id="tenant-1", display_name="Worker",
                                principal_type="service_account"))
-        role = db.Role(id="tenant-1:reader", tenant_id="tenant-1", name="reader")
+        role = db.Role(id="7001", tenant_id="tenant-1", name="reader")
         store.add(role)
         store.add(db.PrincipalRole(principal_id="service-1", role_id=role.id))
         store.commit()
@@ -172,7 +172,10 @@ def test_disabled_tenant_rejects_browser_session_provisioning(service_store, mon
 
 
 def test_local_admin_session_requires_existing_local_identity_and_revalidates(service_store):
-    def request_for(subject="local-admin"):
+    from app.global_ids import new_id
+    admin_id = new_id()
+
+    def request_for(subject=admin_id):
         return Request({
             "type": "http",
             "method": "GET",
@@ -185,11 +188,11 @@ def test_local_admin_session_requires_existing_local_identity_and_revalidates(se
     assert missing.value.status_code == 403
 
     with service_store() as store:
-        store.add(db.Principal(id="local-admin", tenant_id="tenant-1",
+        store.add(db.Principal(id=admin_id, tenant_id="tenant-1",
                                display_name="Local administrator", principal_type="local_admin"))
         store.commit()
     principal = principal_from_session(request_for(), None)
-    assert principal.subject == "local-admin"
+    assert principal.subject == admin_id
     assert principal.source == "local"
 
 
@@ -233,7 +236,7 @@ def test_role_changes_apply_to_next_request(service_store):
     assert principal_from_oidc_token(bearer(service_store.private_key)).roles == {"reader"}
     with service_store() as store:
         store.query(db.PrincipalRole).filter_by(principal_id="service-1").delete()
-        role = db.Role(id="tenant-1:writer", tenant_id="tenant-1", name="writer")
+        role = db.Role(id="7002", tenant_id="tenant-1", name="writer")
         store.add(role)
         store.add(db.PrincipalRole(principal_id="service-1", role_id=role.id))
         store.commit()

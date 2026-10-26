@@ -2,8 +2,8 @@ import argparse
 import hashlib
 import json
 import math
+import secrets
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import HTTPError
 from pathlib import Path
@@ -144,7 +144,7 @@ def main():
     parser.add_argument('--check', action='store_true', help='fail when the documented quality floor regresses')
     args = parser.parse_args()
     questions = [json.loads(line) for line in (ROOT / 'questions.jsonl').read_text().splitlines() if line.strip()]
-    run_id = uuid.uuid4().hex
+    run_id = secrets.token_hex(16)
     retrieval, answers = [], []
     for item in questions:
         status, data, ms, error = call(args.base_url, '/api/v1/retrieval/search', {'query': item['question'], 'limit': 8})

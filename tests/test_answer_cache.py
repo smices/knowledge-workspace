@@ -1,5 +1,4 @@
 import asyncio
-from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -58,7 +57,9 @@ def test_singleflight_merges_same_inflight_answer():
 
 
 def test_feedback_token_is_bound_to_answer_and_actor():
-    answer_id = str(uuid4())
+    from app import global_ids
+
+    answer_id = global_ids.new_id()
     alice = Principal(subject="alice", tenant_id="tenant", roles=frozenset({"reader"}))
     bob = Principal(subject="bob", tenant_id="tenant", roles=frozenset({"reader"}))
     token = rag._feedback_token(answer_id, alice)

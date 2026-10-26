@@ -1,8 +1,8 @@
 """Shared, fail-closed query budgets. Redis coordinates; PostgreSQL owns knowledge."""
 import asyncio
+import secrets
 from contextlib import asynccontextmanager
 from hashlib import sha256
-from uuid import uuid4
 
 from fastapi import HTTPException
 from redis.asyncio import Redis
@@ -96,7 +96,7 @@ async def run_sync(function, *args):
 @asynccontextmanager
 async def admit(principal):
     keys, limits = budget(principal)
-    lease = uuid4().hex
+    lease = secrets.token_hex(16)
     lifetime = int(settings.request_timeout_seconds) + 30
     try:
         accepted, retry = await redis.eval(

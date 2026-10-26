@@ -2,19 +2,21 @@
 
 from datetime import UTC, datetime, timedelta
 import json
-from uuid import uuid4
+import secrets
 
 from aiokafka import AIOKafkaProducer
 from sqlalchemy import or_, select
 
 from app.config import settings
 from app.db import EventOutbox, IngestionJob, SessionLocal
+from app.global_ids import new_id, validate_id
 
 OUTBOX_LEASE_SECONDS = 60
 RETRY_BASE_SECONDS = 5
 
 
-def enqueue_document(db, document, version, event_type="document.index", trace_id=None):
+def enqueue_document(db, document, version, event_type="document.index", trace_id=None,
+                     event_id=None, job_id=None):
     """Add the job and immutable event to the caller's transaction."""
     if event_type not in {"document.index", "document.delete"}:
         raise ValueError("unsupported ingestion event type")
@@ -25,13 +27,15 @@ def enqueue_document(db, document, version, event_type="document.index", trace_i
     if version.document_id != document.id:
         raise ValueError("document version does not belong to document")
     stage = "delete" if event_type == "document.delete" else "index"
+    event_id = validate_id(event_id) if event_id is not None else new_id()
+    job_id = validate_id(job_id) if job_id is not None else new_id()
     job = db.scalar(
         select(IngestionJob)
         .where(IngestionJob.document_version_id == version.id, IngestionJob.stage == stage)
         .with_for_update()
     )
     if job is None:
-        job = IngestionJob(document_version_id=version.id, stage=stage, generation=1)
+        job = IngestionJob(id=job_id, document_version_id=version.id, stage=stage, generation=1)
         db.add(job)
         db.flush()
     else:
@@ -43,7 +47,6 @@ def enqueue_document(db, document, version, event_type="document.index", trace_i
         job.error_code = None
         job.error_message = None
         job.finished_at = None
-    event_id = str(uuid4())
     payload = {
         "event_id": event_id,
         "tenant_id": document.tenant_id,
@@ -52,7 +55,7 @@ def enqueue_document(db, document, version, event_type="document.index", trace_i
         "version": version.version,
         "event_type": event_type,
         "job_generation": job.generation,
-        "trace_id": trace_id or str(uuid4()),
+        "trace_id": trace_id or secrets.token_hex(16),
         "occurred_at": datetime.now(UTC).isoformat(),
     }
     job.trace_id = payload["trace_id"]
@@ -69,7 +72,7 @@ def enqueue_document(db, document, version, event_type="document.index", trace_i
 
 def enqueue_retry(db, payload: dict, delay_seconds: int, error: str):
     """Persist a redelivery with the original immutable event id."""
-    retry_id = str(uuid4())
+    retry_id = new_id()
     db.add(EventOutbox(
         id=retry_id,
         event_type=payload.get("event_type", "document.index"),
@@ -150,23 +153,3 @@ async def publish_pending_outbox(limit=100):
     finally:
         await producer.stop()
     return published
-
-
-async def publish_documents(document_ids: list[str]):
-    """Compatibility publisher for old callers; new mutations use the outbox."""
-    producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
-    await producer.start()
-    try:
-        for document_id in document_ids:
-            payload = {"event_id": str(uuid4()), "document_id": document_id, "event_type": "document.index"}
-            await producer.send_and_wait(
-                settings.kafka_document_topic,
-                json.dumps(payload).encode(),
-                key=document_id.encode(),
-            )
-    finally:
-        await producer.stop()
-
-
-async def publish_document(document_id: str):
-    await publish_documents([document_id])

@@ -20,3 +20,5 @@ data/
 *.egg-info/
 admin/node_modules/
 admin/src/.umi-*/
+
+/tmp/

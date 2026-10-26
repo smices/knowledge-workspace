@@ -4,9 +4,9 @@ import asyncio
 import io
 import json
 import re
+import secrets
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from aiokafka import AIOKafkaConsumer
 from qdrant_client import models
@@ -29,13 +29,14 @@ from app.db import (
     SessionLocal,
 )
 from app.events import enqueue_retry, publish_pending_outbox
+from app.global_ids import new_ids, validate_id
 from app.storage import get_file
 from app.vector import client, ensure_collection, sparse_vector
 from worker.llm import embed
 
 MAX_BUSINESS_ATTEMPTS = 3
 RETRY_DELAYS = (5, 30)
-WORKER_ID = uuid4().hex
+WORKER_ID = secrets.token_hex(16)
 SUPPORTED_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -99,8 +100,8 @@ def validate_event(payload: object) -> dict:
     required = ("event_id", "tenant_id", "document_id", "document_version_id", "version",
                 "event_type", "job_generation", "trace_id")
     text_limits = {
-        "event_id": 36, "tenant_id": 128, "document_id": 36,
-        "document_version_id": 36, "event_type": 128, "trace_id": 64,
+        "event_id": 19, "tenant_id": 128, "document_id": 19,
+        "document_version_id": 19, "event_type": 128, "trace_id": 64,
     }
     for key, limit in text_limits.items():
         value = payload.get(key)
@@ -117,6 +118,11 @@ def validate_event(payload: object) -> dict:
                 invalid = True
         if invalid:
             raise ValueError(f"event_{key}_invalid")
+    for key in ("event_id", "document_id", "document_version_id"):
+        try:
+            validate_id(payload[key])
+        except ValueError as exc:
+            raise ValueError(f"event_{key}_invalid") from exc
     if payload["event_type"] not in {"document.index", "document.delete"}:
         raise ValueError("event_type_not_supported")
     if isinstance(payload["version"], bool) or not isinstance(payload["version"], int) or payload["version"] < 1:
@@ -150,10 +156,17 @@ def _safe_event_metadata(payload: object) -> dict:
         return value.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")[:limit] or None
 
     for key, limit in {
-        "event_id": 36, "tenant_id": 128, "document_id": 36,
-        "document_version_id": 36, "event_type": 128, "trace_id": 64,
+        "event_id": 19, "tenant_id": 128, "document_id": 19,
+        "document_version_id": 19, "event_type": 128, "trace_id": 64,
     }.items():
-        value = safe_text(payload.get(key), limit)
+        raw = payload.get(key)
+        if key in {"event_id", "document_id", "document_version_id"}:
+            try:
+                value = validate_id(raw)
+            except ValueError:
+                continue
+        else:
+            value = safe_text(raw, limit)
         if value is not None:
             metadata[key] = value
     for key in ("version", "job_generation"):
@@ -215,7 +228,7 @@ def _obsolete(doc, version, job, event):
 
 
 def _claim_token():
-    return f"{WORKER_ID}:{uuid4().hex}"
+    return f"{WORKER_ID}:{secrets.token_hex(16)}"
 
 
 def _mark_processing(event):
@@ -303,12 +316,26 @@ def _publish_index(event, pieces, vectors, loader=None, qdrant=None, worker_id=N
         if any(not isinstance(vector, list) or len(vector) != settings.embedding_dimensions for vector in vectors):
             raise ValueError("embedding_dimension_mismatch")
         roles = _roles(db, doc.id, doc.tenant_id)
+        aliases = list(alias_candidates(pieces))
+        old_chunk_ids = {row.chunk_index: row.id for row in db.scalars(
+            select(Chunk).where(Chunk.document_version_id == version.id)
+        )}
+        old_alias_ids = {(row.chunk_index, row.canonical, row.alias): row.id for row in db.scalars(
+            select(EntityAlias).where(EntityAlias.document_version_id == version.id)
+        )}
+        missing_ids = (sum(index not in old_chunk_ids for index in range(len(pieces)))
+                       + sum((index, canonical, alias) not in old_alias_ids
+                             for index, canonical, alias, _ in aliases))
+        allocated_ids = iter(new_ids(missing_ids))
+        chunk_ids = [old_chunk_ids.get(index) or next(allocated_ids) for index in range(len(pieces))]
+        alias_ids = [old_alias_ids.get((index, canonical, alias)) or next(allocated_ids)
+                     for index, canonical, alias, _ in aliases]
         db.query(Chunk).filter(Chunk.document_version_id == version.id).delete(synchronize_session=False)
         db.query(KnowledgeRelation).filter(KnowledgeRelation.document_version_id == version.id).delete(synchronize_session=False)
         db.query(EntityAlias).filter(EntityAlias.document_version_id == version.id).delete(synchronize_session=False)
         db.add_all([
             Chunk(
-                id=str(uuid5(NAMESPACE_URL, f"{version.id}:{index}")),
+                id=chunk_ids[index],
                 document_version_id=version.id,
                 chunk_index=index,
                 content=piece,
@@ -320,16 +347,17 @@ def _publish_index(event, pieces, vectors, loader=None, qdrant=None, worker_id=N
         ])
         db.add_all([
             EntityAlias(
-                tenant_id=doc.tenant_id, document_version_id=version.id, chunk_index=index,
+                id=alias_ids[position], tenant_id=doc.tenant_id,
+                document_version_id=version.id, chunk_index=index,
                 canonical=canonical, alias=alias, excerpt=excerpt,
                 source="pattern", created_by=doc.created_by,
             )
-            for index, canonical, alias, excerpt in alias_candidates(pieces)
+            for position, (index, canonical, alias, excerpt) in enumerate(aliases)
         ])
         qdrant.delete(settings.qdrant_collection, models.FilterSelector(filter=_version_filter(doc.tenant_id, version.id)))
         qdrant.upsert(settings.qdrant_collection, [
             models.PointStruct(
-                id=str(uuid5(NAMESPACE_URL, f"{version.id}:{index}")),
+                id=int(chunk_ids[index]),
                 vector={"": vector, "lexical": sparse_vector(piece)},
                 payload={
                     "tenant_id": doc.tenant_id,

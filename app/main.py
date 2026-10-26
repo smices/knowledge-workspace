@@ -1,4 +1,5 @@
 from pathlib import Path
+import secrets
 from typing import Literal
 
 import asyncio
@@ -13,7 +14,6 @@ from hashlib import sha256
 from io import BytesIO
 from time import perf_counter
 from urllib.parse import urlparse
-from uuid import UUID, uuid4
 
 from fastapi import Depends, File, Form, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -21,9 +21,9 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAI
 from qdrant_client import models
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, StatementError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import (
@@ -52,6 +52,7 @@ from app.cache import (
     singleflight,
 )
 from app.config import settings
+from app.global_ids import GlobalIDUnavailable, new_id, new_ids, validate_id
 from app.admission import admit, run_sync
 from app.db import (
     AnswerFeedback,
@@ -115,7 +116,7 @@ class RequestMetrics:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        trace_id, started, status = str(uuid4()), perf_counter(), 500
+        trace_id, started, status = secrets.token_hex(16), perf_counter(), 500
 
         async def traced_send(message):
             nonlocal status
@@ -175,6 +176,18 @@ async def admin_page_gate(request: Request, call_next):
 @app.exception_handler(VersionScopeOverflow)
 async def version_scope_overflow(_request, _error):
     return JSONResponse(status_code=503, content={"detail": "Document scope exceeds retrieval capacity"})
+
+
+@app.exception_handler(GlobalIDUnavailable)
+async def global_id_unavailable(_request, _error):
+    return JSONResponse(status_code=503, content={"detail": "Business ID authority unavailable"})
+
+
+@app.exception_handler(StatementError)
+async def global_id_default_failure(_request, error):
+    if isinstance(error.orig, GlobalIDUnavailable):
+        return await global_id_unavailable(_request, error)
+    raise error
 
 
 @app.exception_handler(RequestValidationError)
@@ -285,10 +298,15 @@ class AccountPasswordRequest(BaseModel):
 
 
 class EntityAliasRequest(BaseModel):
-    document_id: str = Field(min_length=36, max_length=36)
+    document_id: str
     chunk_index: int = Field(ge=0)
     canonical: str = Field(min_length=2, max_length=255)
     alias: str = Field(min_length=2, max_length=255)
+
+    @field_validator("document_id")
+    @classmethod
+    def valid_document_id(cls, value):
+        return validate_id(value)
 
 
 class EntityAliasStatusRequest(BaseModel):
@@ -368,7 +386,7 @@ def ensure_principal(db, principal: Principal) -> list[Role]:
         role = db.scalar(select(Role).where(Role.tenant_id == principal.tenant_id,
                                             Role.name == role_name))
         if role is None:
-            role = Role(id=str(uuid4()), tenant_id=principal.tenant_id, name=role_name)
+            role = Role(id=new_id(), tenant_id=principal.tenant_id, name=role_name)
             db.add(role)
         roles.append(role)
     db.flush()
@@ -670,8 +688,10 @@ def require_admin(principal: Principal) -> None:
         raise HTTPException(403, "admin role required")
 
 
-def audit(db, principal: Principal, action: str, resource_type: str, resource_id: str | None, outcome: str):
+def audit(db, principal: Principal, action: str, resource_type: str, resource_id: str | None, outcome: str,
+          audit_id: str | None = None):
     db.add(AuditEvent(
+        id=validate_id(audit_id) if audit_id is not None else new_id(),
         tenant_id=principal.tenant_id,
         subject=principal.subject,
         action=action,
@@ -896,10 +916,7 @@ async def _read_document_upload(file: UploadFile, filename: str, content_type: s
 
 
 def _persist_upload(p, filename, content_type, raw, roles, knowledge_base_name):
-    document_id = str(uuid4())
-    version_id = str(uuid4())
     source_hash = sha256(raw).hexdigest()
-    key = f"{p.tenant_id}/documents/{document_id}/versions/1/source/{filename}"
     with SessionLocal() as db:
         ensure_principal(db, p)
         db.scalar(select(Tenant).where(Tenant.id == p.tenant_id).with_for_update())
@@ -932,6 +949,8 @@ def _persist_upload(p, filename, content_type, raw, roles, knowledge_base_name):
             if file_exists(duplicate_version.source_object_key):
                 return {"document_id": duplicate_doc.id, "status": "reused"}
 
+        document_id, version_id = new_ids(2)
+        key = f"{p.tenant_id}/documents/{document_id}/versions/1/source/{filename}"
         doc = Document(id=document_id, tenant_id=p.tenant_id, title=filename, status="queued",
                        created_by=p.subject, knowledge_base_id=knowledge_base_id, object_key=key,
                        content_type=content_type)
@@ -943,16 +962,18 @@ def _persist_upload(p, filename, content_type, raw, roles, knowledge_base_name):
         for role_name in roles:
             role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == role_name))
             if role is None:
-                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=role_name)
+                role = Role(id=new_id(), tenant_id=p.tenant_id, name=role_name)
                 db.add(role)
                 db.flush()
             db.add(DocumentGrant(document_id=document_id, role_id=role.id))
+        job_id, event_id, audit_id = new_ids(3)
         commit_started = False
         try:
             put_file(key, BytesIO(raw), content_type)
-            enqueue_document(db, doc, version, trace_id=str(uuid4()))
+            enqueue_document(db, doc, version, trace_id=secrets.token_hex(16),
+                             event_id=event_id, job_id=job_id)
             bump_knowledge_revision(p.tenant_id, db)
-            audit(db, p, "document.upload", "document", document_id, "accepted")
+            audit(db, p, "document.upload", "document", document_id, "accepted", audit_id)
             commit_started = True
             db.commit()
         except Exception as exc:
@@ -1045,6 +1066,7 @@ def list_documents(p: Principal = Depends(principal_from_session),
 
 @app.get("/api/v1/documents/{document_id}/status")
 def document_status(document_id: str, p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     with SessionLocal() as db:
         doc = db.scalar(select(Document).where(Document.id == document_id, *document_access(p)))
         if doc is None:
@@ -1054,6 +1076,7 @@ def document_status(document_id: str, p: Principal = Depends(principal_from_sess
 
 @app.post("/api/v1/documents/{document_id}/reindex")
 def reindex_document(document_id: str, p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     require_admin(p)
     with SessionLocal() as db:
         doc = db.scalar(select(Document).where(
@@ -1069,7 +1092,7 @@ def reindex_document(document_id: str, p: Principal = Depends(principal_from_ses
         if version is None:
             raise HTTPException(409, "document version missing")
         doc.status, doc.error, version.status = "queued", None, "queued"
-        enqueue_document(db, doc, version, trace_id=str(uuid4()))
+        enqueue_document(db, doc, version, trace_id=secrets.token_hex(16))
         bump_knowledge_revision(p.tenant_id, db)
         audit(db, p, "document.reindex", "document", document_id, "accepted")
         db.commit()
@@ -1091,7 +1114,7 @@ def reindex_all_documents(p: Principal = Depends(principal_from_session)):
             if version is None:
                 continue
             document.status, document.error, version.status = "queued", None, "queued"
-            enqueue_document(db, document, version, trace_id=str(uuid4()))
+            enqueue_document(db, document, version, trace_id=secrets.token_hex(16))
             audit(db, p, "document.reindex_all", "document", document.id, "accepted")
             queued += 1
         if queued:
@@ -1102,6 +1125,7 @@ def reindex_all_documents(p: Principal = Depends(principal_from_session)):
 
 @app.post("/api/v1/documents/{document_id}/cancel")
 def cancel_document(document_id: str, p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     require_admin(p)
     with SessionLocal() as db:
         doc = db.scalar(select(Document).where(
@@ -1125,6 +1149,7 @@ def cancel_document(document_id: str, p: Principal = Depends(principal_from_sess
 
 @app.delete("/api/v1/documents/{document_id}", status_code=202)
 def delete_document(document_id: str, p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     require_admin(p)
     with SessionLocal() as db:
         doc = db.scalar(select(Document).where(
@@ -1146,7 +1171,7 @@ def delete_document(document_id: str, p: Principal = Depends(principal_from_sess
                 IngestionJob.stage == "delete", IngestionJob.status == "dead_letter")
         versions = db.scalars(statement.with_for_update(of=DocumentVersion)).all()
         for version in versions:
-            enqueue_document(db, doc, version, event_type="document.delete", trace_id=str(uuid4()))
+            enqueue_document(db, doc, version, event_type="document.delete", trace_id=secrets.token_hex(16))
         if not versions and not retrying:
             doc.status, doc.deleted_at = "deleted", func.now()
         bump_knowledge_revision(p.tenant_id, db)
@@ -1191,7 +1216,7 @@ async def _retrieve(body: SearchRequest, p: Principal):
 
 def _answer_result(answer: str, state: str, citations: list[dict], contract: list[dict],
                    revision: int, bindings: list[dict] | None = None) -> dict:
-    return {"answer_id": str(uuid4()), "answer": answer, "answer_state": state,
+    return {"answer_id": new_id(), "answer": answer, "answer_state": state,
             "answer_state_label": ANSWER_STATE_LABELS[state], "evidence_contract": contract,
             "citations": citations, "entity_bindings": bindings or [], "graph_available": state == "answered",
             "cache": {"level": "generated", "hit": False, "knowledge_revision": revision}}
@@ -1278,7 +1303,7 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
     started = perf_counter()
     if not p.roles:
         await run_sync(log_query, p, body.query, "answer", 0, started)
-        result = _answer_result("没有找到当前角色可访问的知识。", "no_answer", [], [], revision)
+        result = await run_sync(_answer_result, "没有找到当前角色可访问的知识。", "no_answer", [], [], revision)
         await run_sync(cache_put, exact_key, result, 300)
         return result
     vector = (await async_llm.embeddings.create(
@@ -1288,7 +1313,7 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
     contexts = [point.payload or {} for point in points]
     if not contexts:
         await run_sync(log_query, p, body.query, "answer", 0, started)
-        result = _answer_result("根据当前可访问的知识，我无法确认这个问题。",
+        result = await run_sync(_answer_result, "根据当前可访问的知识，我无法确认这个问题。",
                                 "no_answer", [], [], revision)
         await run_sync(cache_put, exact_key, result, 300)
         return result
@@ -1330,7 +1355,8 @@ async def _answer_work(body: AnswerRequest, p: Principal, revision: int,
         direct_contract = [item for item in contract if item["support"] == "supported"]
         answer_text, state = direct_only_answer(contract)
         contract = direct_contract or evidence_contract(answer_text, contexts, state)
-    result = _answer_result(answer_text, state, citations, contract, revision, alias_bindings(contexts, records))
+    result = await run_sync(_answer_result, answer_text, state, citations, contract, revision,
+                            alias_bindings(contexts, records))
     await run_sync(validate_query_result, p, revision, result)
     await run_sync(cache_put, exact_key, result, 21600 if state == "answered" else 300)
     if state == "answered" and contract and all(
@@ -1447,10 +1473,8 @@ async def graph(body: GraphRequest, request: Request,
 @app.put("/api/v1/rag/answers/{answer_id}/feedback")
 def set_answer_feedback(answer_id: str, body: FeedbackRequest,
                         p: Principal = Depends(principal_from_session)):
-    try:
-        answer_id = str(UUID(answer_id))
-    except ValueError as exc:
-        raise HTTPException(422, "invalid answer id") from exc
+    if not re.fullmatch(r"[1-9][0-9]{0,18}", answer_id) or int(answer_id) > 9223372036854775807:
+        raise HTTPException(422, "invalid answer id")
     if not hmac.compare_digest(body.token, _feedback_token(answer_id, p)):
         raise HTTPException(403, "invalid feedback token")
     with SessionLocal() as db:
@@ -1476,7 +1500,7 @@ def create_role(body: RoleRequest, p: Principal = Depends(principal_from_session
         ensure_principal(db, p)
         role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == body.name))
         if role is None:
-            role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=body.name)
+            role = Role(id=new_id(), tenant_id=p.tenant_id, name=body.name)
             db.add(role)
             db.commit()
         return {"id": role.id, "name": role.name}
@@ -1487,6 +1511,13 @@ def _validated_roles(roles: set[str]) -> set[str]:
     if any(not re.fullmatch(r"[a-zA-Z0-9:_-]{1,128}", name) for name in values):
         raise HTTPException(422, "invalid role name")
     return values
+
+
+def _require_business_id(value: str) -> None:
+    try:
+        validate_id(value)
+    except ValueError as exc:
+        raise HTTPException(422, "invalid business ID") from exc
 
 
 @app.post("/api/v1/admin/members", status_code=201)
@@ -1511,7 +1542,7 @@ def create_member(request: Request, body: MemberCreateRequest,
                     LocalUserCredential.tenant_id == p.tenant_id,
                     LocalUserCredential.username == username)) is not None:
                 raise HTTPException(409, "username already exists")
-            subject = f"local:user:{uuid4()}"
+            subject = new_id()
             member = DbPrincipal(id=subject, tenant_id=p.tenant_id, display_name=username,
                                  principal_type="local_user")
             db.add(member)
@@ -1536,7 +1567,7 @@ def create_member(request: Request, body: MemberCreateRequest,
         for name in roles:
             role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
             if role is None:
-                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=name)
+                role = Role(id=new_id(), tenant_id=p.tenant_id, name=name)
                 db.add(role)
                 db.flush()
             db.add(PrincipalRole(principal_id=member.id, role_id=role.id))
@@ -1611,7 +1642,7 @@ def update_member_roles(request: Request, subject: str, body: MemberRolesRequest
         for name in roles:
             role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
             if role is None:
-                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=name)
+                role = Role(id=new_id(), tenant_id=p.tenant_id, name=name)
                 db.add(role)
                 db.flush()
             db.add(PrincipalRole(principal_id=member.id, role_id=role.id))
@@ -1759,6 +1790,7 @@ def admin_documents(p: Principal = Depends(principal_from_session),
 
 @app.get("/api/v1/admin/documents/{document_id}/grants")
 def document_grants(document_id: str, p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     require_admin(p)
     with SessionLocal() as db:
         document = db.scalar(select(Document).where(
@@ -1777,6 +1809,7 @@ def document_grants(document_id: str, p: Principal = Depends(principal_from_sess
 @app.put("/api/v1/admin/documents/{document_id}/grants")
 def update_document_grants(document_id: str, body: DocumentGrantRequest,
                            p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     require_admin(p)
     roles = _validated_roles(body.roles)
     with SessionLocal() as db:
@@ -1787,6 +1820,14 @@ def update_document_grants(document_id: str, body: DocumentGrantRequest,
         if document is None:
             raise HTTPException(404, "document not found")
         previous = _document_grant_roles(db, document.id, p.tenant_id)
+        role_rows = []
+        for name in roles:
+            role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
+            if role is None:
+                role = Role(id=new_id(), tenant_id=p.tenant_id, name=name)
+                db.add(role)
+            role_rows.append(role)
+        audit_id = new_id()
         # Remove access in Qdrant before the database commits. A failed or
         # delayed expansion can deny access temporarily, but never leaks it.
         ready = document.status == "ready"
@@ -1796,15 +1837,10 @@ def update_document_grants(document_id: str, body: DocumentGrantRequest,
             except Exception as exc:
                 raise HTTPException(503, "vector authorization sync unavailable") from exc
         db.execute(delete(DocumentGrant).where(DocumentGrant.document_id == document.id))
-        for name in roles:
-            role = db.scalar(select(Role).where(Role.tenant_id == p.tenant_id, Role.name == name))
-            if role is None:
-                role = Role(id=str(uuid4()), tenant_id=p.tenant_id, name=name)
-                db.add(role)
-                db.flush()
+        for role in role_rows:
             db.add(DocumentGrant(document_id=document.id, role_id=role.id))
         bump_knowledge_revision(p.tenant_id, db)
-        audit(db, p, "document.grants.update", "document", document.id, "accepted")
+        audit(db, p, "document.grants.update", "document", document.id, "accepted", audit_id)
         db.commit()
         if ready:
             try:
@@ -1816,6 +1852,7 @@ def update_document_grants(document_id: str, body: DocumentGrantRequest,
 
 @app.get("/api/v1/documents/{document_id}/content")
 def document_content(document_id: str, p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     with SessionLocal() as db:
         doc = db.scalar(select(Document).where(Document.id == document_id, *document_access(p)))
         if doc is None:
@@ -1850,23 +1887,30 @@ def _persist_replace(document_id, p, filename, content_type, raw):
         current_versions = db.scalars(select(DocumentVersion).where(
             DocumentVersion.document_id == doc.id, DocumentVersion.status != "deleted"
         ).with_for_update()).all()
-        new_version = DocumentVersion(id=str(uuid4()), document_id=doc.id, version=version,
+        new_version = DocumentVersion(id=new_id(), document_id=doc.id, version=version,
                                       source_object_key=key, source_filename=filename,
                                       content_type=content_type, source_hash=sha256(raw).hexdigest(),
                                       created_by=p.subject, status="queued")
         doc.version, doc.object_key, doc.content_type, doc.status, doc.error = version, key, content_type, "queued", None
         db.add(new_version)
         db.flush()
+        queue_ids = new_ids((len(current_versions) + 1) * 2 + 1)
+        allocations = iter(queue_ids)
+        queued_events = [(next(allocations), next(allocations)) for _ in range(len(current_versions) + 1)]
+        audit_id = next(allocations)
         commit_started = False
         try:
             put_file(key, BytesIO(raw), content_type)
-            for old_version in current_versions:
+            for old_version, (job_id, event_id) in zip(current_versions, queued_events):
                 if old_version.id == new_version.id:
                     continue
                 old_version.status = "superseded"
-                enqueue_document(db, doc, old_version, event_type="document.delete", trace_id=str(uuid4()))
-            enqueue_document(db, doc, new_version, trace_id=str(uuid4()))
-            audit(db, p, "document.replace", "document", doc.id, "accepted")
+                enqueue_document(db, doc, old_version, event_type="document.delete",
+                                 trace_id=secrets.token_hex(16), event_id=event_id, job_id=job_id)
+            job_id, event_id = queued_events[-1]
+            enqueue_document(db, doc, new_version, trace_id=secrets.token_hex(16),
+                             event_id=event_id, job_id=job_id)
+            audit(db, p, "document.replace", "document", doc.id, "accepted", audit_id)
             bump_knowledge_revision(p.tenant_id, db)
             commit_started = True
             db.commit()
@@ -1881,6 +1925,7 @@ def _persist_replace(document_id, p, filename, content_type, raw):
 
 @app.put("/api/v1/documents/{document_id}", status_code=202)
 async def replace_document(document_id: str, file: UploadFile = File(...), p: Principal = Depends(principal_from_session)):
+    _require_business_id(document_id)
     require_admin(p)
     filename, content_type = _upload_metadata(file)
     async with _UPLOAD_SLOTS:
@@ -1989,6 +2034,7 @@ def create_entity_alias(body: EntityAliasRequest, p: Principal = Depends(princip
 @app.put("/api/v1/admin/entity-aliases/{alias_id}")
 def update_entity_alias(alias_id: str, body: EntityAliasStatusRequest,
                         p: Principal = Depends(principal_from_session)):
+    _require_business_id(alias_id)
     require_admin(p)
     with SessionLocal() as db:
         version = db.scalar(select(DocumentVersion).join(Document).join(
