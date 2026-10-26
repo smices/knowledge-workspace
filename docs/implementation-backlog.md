@@ -1,6 +1,6 @@
 # 未完成能力与逐步交付清单
 
-更新日期：2026-09-10。状态只能由实现、审查和验证证据推进；历史测试通过不代表未实现功能已经完成。每个交付阶段单独提交，不自动推送或部署。
+更新日期：2026-10-26。状态只能由实现、审查和验证证据推进；历史测试通过不代表未实现功能已经完成。每个交付阶段单独提交，不自动推送或部署。
 
 ## 当前阶段：登录与受控用户创建
 
@@ -38,8 +38,22 @@
 | QA-02 | 持续验证与可复现交付 | 待实现 | CI、自动浏览器回归、镜像使用锁定依赖、安全检查；外部 CI 配置另行授权 |
 | OPS-01 | 容量与灾备验收 | 待验证 | 1500 员工与 AI worker 混合压测、并发入库、积压恢复、备份恢复；明确流量及网关配额后在授权环境执行 |
 | OPS-02 | 生产身份与部署验收 | 待验证 | 正式 IdP client/callback/Secret、真实登录及撤销、多副本与基础服务 HA；不自动修改外部系统 |
+| OPS-03 | 共享基础设施兼容与验收 | 待验证 | 复用 base-plat 提供的共享服务；验证驱动/配置、迁移兼容性及应用连接。未发现 Knowledge 服务；缺失/不兼容项先报告，不在业务仓库部署副本或修改 infra。当前检查到 PostgreSQL 16.15/18.6、Redis 7.4.11、Qdrant 1.15.4、Kafka 4.3.1、SeaweedFS 4.48；Kubernetes 与 Compose 目标为 PostgreSQL 18 / Kafka 4；升级需保留既有数据，禁止直接以升级版本启动旧数据卷。Qdrant 1.13 client 对 1.15.4 server 的兼容性待验证 |
+| ID-01 | 业务 ID authority | 阻塞部署写入验收 | 所有新持久化业务 ID 通过共享 `global-id-service`；验证调用方、并发分配、失败拒绝写入和重放边界。服务位于 `sn-base-plat` 命名空间，Service 为 `global-id-service`（8090/8091/8092）；应用仍使用 UUID 业务 ID，完成接入前不得声称写路径符合要求 |
+| M2M-03 | MCP 接口 | 未实现 | MCP transport、工具契约、输入/输出 schema、授权与错误边界；当前无 MCP 实现。复用已有授权 API 能力并纳入安全验收 |
 
 当前保护上限和已有验证见 [容量验收说明](capacity-readiness.md)。复杂 Agent 编排、自动工作流设计器和自研数据库不纳入本轮必做范围。
+
+## 当前能力证据
+
+| 能力 | 当前证据 | 缺口 |
+| --- | --- | --- |
+| 检索与问答 API | `POST /api/v1/retrieval/search`、`POST /api/v1/rag/answer` | 按权限、容量与真实服务链路持续验收 |
+| 文档替换 | `PUT /api/v1/documents/{document_id}`，管理员限定 | 继续验证授权、审计与失败恢复 |
+| OIDC 机器 Bearer | 基础签名/issuer/audience/subject/过期校验和本地角色映射 | 严格 `typ`/`azp`/tenant/scope 尚缺，见 M2M-01 |
+| MCP | 未发现实现 | 见 M2M-03 |
+| 业务 ID authority | 共享 global-id-service 已提供；应用仍以 UUID 生成业务 ID | 写入接入与故障/并发验证未完成，见 ID-01 |
+| Kubernetes 共享依赖 | 已检查基础服务版本；未发现 Knowledge 服务 | 兼容性和应用连接尚未验收，见 OPS-03 |
 
 ## 交付记录
 
@@ -55,3 +69,9 @@
   - 全部 POST/PUT/PATCH/DELETE 浏览器请求在统一中间件校验同源；机器 Bearer 调用不依赖浏览器 Cookie，认证仍由原接口完成。
   - 管理员可读取并替换本租户文档角色；空角色集合拒绝所有检索角色。授权变更审计、提升知识版本，并以“先收紧、后提交、再扩展”的顺序同步 Qdrant payload；最终同步失败时返回可重试错误且保持收紧状态。
   - 覆盖跨租户拒绝、角色撤销后内容拒绝、缓存版本提升、审计、同步失败及重试、浏览器同源拒绝和 Bearer API 边界。未执行真实 Qdrant/Kafka/MinIO 全链路验收，仍由 QA-02/OPS-01 跟踪。
+
+- 2026-10-26：调整基础设施归属与环境接入要求，PostgreSQL 基线升为 18、Kafka 升为 4；localidc 复用 infra 中的 PostgreSQL 18.6／Kafka 4.3.1。
+  - 已读取两个环境的 OIDC discovery，确认 localidc 与生产 issuer；没有执行真实用户登录或机器令牌联调。
+  - 认证／权限／入库聚焦测试 48 项通过；事件与重试测试 3 项通过。隔离 PostgreSQL 18.6 的并发迁移测试 1 项通过，实例已清理。
+  - aiokafka 0.14.0 对共享 Kafka 4.3.1 的 bootstrap、ApiVersions 与 metadata 读取成功；没有创建 topic 或发送消息，不等于生产／消费全链路验收。
+  - Compose 配置、Kubernetes 渲染、Python 编译和 `uv lock --check` 通过。本机 Docker daemon 不可用，未启动完整 Compose；未迁移旧业务数据、部署应用或修改 infra。MCP、完整机器 claims/scope、global-id-service 接入仍未完成。

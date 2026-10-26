@@ -17,4 +17,7 @@
 - Knowledge content requires authentication. Support local username/password login (including the installation administrator) alongside OpenIdentity OIDC login.
 - Public self-registration is closed. Administrators can create application users; do not add an anonymous registration endpoint.
 - Local credentials and IdP identities are separate. Never collect IdP passwords, use a password grant, or merge identities by email/name. IdP account identity uses the verified stable subject.
-- Read OpenIdentity's application and API service integration contracts before identity changes. External IdP registration, credentials, and deployment require separate authorization.
+- Read OpenIdentity's application and API service integration contracts before identity changes. localidc application deployment and testing are authorized; production deployment, external IdP registration, and credential changes require separate authorization.
+- Shared dependencies are owned and provided by the base-plat Kubernetes `infra` group/namespace. Reuse only after verifying the service major version and runtime/driver compatibility. Report missing or incompatible components before considering installation; never deploy duplicates or modify shared infrastructure from this business repository.
+- OpenIdentity user identity comes from localidc (`https://idp.is1.snnc.cc/realms/openidentity`) for local testing and production IdP (`https://idp.snnc.cc/realms/openidentity`) for production. Preserve local administrator/local credentials and application RBAC; do not handle or synchronize IdP passwords.
+- New persisted business IDs must use the shared `global-id-service`; until application integration is complete, business writes that allocate IDs locally are not deployment-ready.

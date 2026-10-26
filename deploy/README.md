@@ -63,11 +63,23 @@ deploy/appctl docker-down
 
 Compose 使用已通过 `npm --prefix admin run build` 生成的 `admin/dist` 构建 Python 镜像；运行时仍由 `deploy/.env.local` 注入品牌与服务配置。修改 Admin 源码后应先重新执行构建并提交对应产物。
 
+## PostgreSQL 18 / Kafka 4 升级边界
+
+Compose 使用 PostgreSQL 18.6 和 Kafka 4.3.1；localidc 直接复用 infra 中同版本服务，不对共享实例执行升级。
+
+PostgreSQL 18 的卷挂载点改为 `/var/lib/postgresql`，数据目录由官方镜像设为 `/var/lib/postgresql/18/docker`。保留原 `postgres_data` 卷名；旧 PG17 数据卷不能直接升级，官方启动脚本检测到旧数据会拒绝初始化。已有数据先备份，再经受控 `pg_upgrade` 或逻辑导出／导入迁移，验证后切换；不要删除原卷或执行 `down -v`。[官方镜像说明](https://hub.docker.com/_/postgres)、[旧数据检测实现](https://github.com/docker-library/postgres/blob/master/docker-entrypoint.sh)。
+
+Kafka 使用单节点 KRaft 开发配置；项目 Compose 未配置 Kafka 持久卷。已有消息或自定义持久卷的环境，切换前必须单独确认保留／迁移方案，不能以开发配置重建 broker 代替迁移。共享 Kafka 不执行任何存储格式化或重建操作。
+
 ## 混合检索升级
 
 `QDRANT_COLLECTION` 默认使用 `knowledge_chunks_hybrid_v1`，其中同时保存 dense 与 `lexical` sparse vector。旧的单向量 collection 不能原地升级：保留旧 collection，将环境变量切换到新名称后，在 Admin 的“知识库文档”执行“重建全部索引”，待任务完成后再切换流量。不要删除旧 collection，直到抽样验证检索、引用和权限过滤。
 
 ## Kubernetes
+
+PostgreSQL、Redis、Qdrant、Kafka 和 S3 兼容存储统一由 base-plat 在 Kubernetes `infra` 分组／命名空间提供。本项目复用共享服务，不部署副本或修改共享基础设施。接入前实查运行大版本和驱动兼容性；缺少对应大版本或组件时先报告，再决定是否由 base-plat 安装。
+
+2026-10-26 实查运行版本：PostgreSQL 16.15／18.6、Redis 7.4.11、Qdrant 1.15.4、Kafka 4.3.1、SeaweedFS 4.48。项目目标为 PostgreSQL 18 和 Kafka 4，Kubernetes 复用 `postgresql-18.infra.svc.cluster.local:5432`、`kafka-4.infra.svc.cluster.local:9092`，由平台提供应用专属数据库及最小权限凭据。Qdrant 1.13 客户端与服务端 1.15.4 的兼容性仍待验证。Compose 仅用于本机开发，不代表允许在 Kubernetes 安装共享组件副本。
 
 1. 编辑 `deploy/k8s/app.yaml` 中的 ConfigMap，配置外部 PostgreSQL、Qdrant、Redis、Kafka、S3 兼容存储、模型服务、OIDC 和品牌。
 2. 编辑 `deploy/k8s/kustomization.yaml`，设置镜像仓库与不可变版本号。
@@ -79,7 +91,7 @@ deploy/appctl k8s-check
 deploy/appctl k8s-apply
 ```
 
-清单部署 API、Worker、迁移 init container 和 ClusterIP Service。数据库、向量库、缓存、消息队列和对象存储应使用所在环境已有的高可用服务。入口域名、TLS 和网关策略由集群基础设施配置。
+清单部署 API、Worker、迁移 init container 和 ClusterIP Service。数据库、向量库、缓存、消息队列和对象存储应使用上述兼容的共享服务。入口域名、TLS 和网关策略由集群基础设施配置。localidc 应用部署和测试已获授权；生产部署及外部 IdP 注册仍需单独授权。
 
 ## 上线检查
 

@@ -22,7 +22,7 @@
 
 ```env
 AUTH_MODE=oidc
-IDENTITY_ISSUER=https://<openidentity-public-host>/realms/openidentity
+IDENTITY_ISSUER=https://idp.snnc.cc/realms/openidentity
 IDENTITY_CLIENT_ID=<OpenIdentity 为 sn_knowledge 下发的环境 Client ID>
 IDENTITY_CLIENT_SECRET=<仅服务端保存>
 IDENTITY_REDIRECT_URI=https://<sn-knowledge-public-host>/auth/callback
@@ -72,7 +72,7 @@ VALUES ('<token-sub>', '<IDENTITY_DEFAULT_TENANT_ID>', 'Knowledge API worker', '
 - Admin 的“成员与权限”管理本地用户及预准入 IdP 用户的应用角色和访问状态。IdP 的姓名、邮箱、密码和个人资料仍只能在 IdP 管理。
 - 管理员不能修改自己的访问状态或角色；禁用 IdP 账号后，服务端会拒绝其后续 API 请求。
 
-在 OpenIdentity 管理台创建 `sn_knowledge` 的每环境 Application/Client 后，必须登记实际公开域名的精确 callback；当前仓库没有假定生产域名，因此正式注册和 IDC 部署需以该地址为准。
+localidc 测试使用 issuer `https://idp.is1.snnc.cc/realms/openidentity`；生产使用 `https://idp.snnc.cc/realms/openidentity`。localidc discovery 已验证可用。生产 Client 注册、callback/logout 地址登记及凭据由 OpenIdentity 平台提供，需单独授权；本地应用部署和测试已获授权，生产部署未获授权。
 
 生产上线前还必须完成 OpenIdentity 的生产验收：以 discovery 返回的 issuer、JWKS、授权、令牌和注销端点为准，验证登录、过期、401、403、回跳和 back-channel logout/revocation。源码与本地合成测试不证明外部 IdP 已生产验收；本项目不据旧文档推断平台当前上线状态。
 
@@ -83,8 +83,8 @@ VALUES ('<token-sub>', '<IDENTITY_DEFAULT_TENANT_ID>', 'Knowledge API worker', '
 - [x] 应用侧 OIDC Authorization Code + PKCE、state/nonce、JWT 签名、issuer、audience 和本地角色映射。
 - [x] OIDC bearer access token 的 issuer、audience、JWKS 签名和 expiry 校验，以及已显式配置 service account 的数据库角色映射。
 - [x] 注销使用 discovery 的 `end_session_endpoint`，并在 IdP 不可用时清理本地会话。
-- [ ] 由 OpenIdentity 平台提供正式生产 issuer、client ID/secret、租户 ID，并登记精确 callback/logout 回跳地址。
+- [ ] 由 OpenIdentity 平台提供生产 client ID/secret、租户 ID，并登记精确 callback/logout 回跳地址；生产 IdP 注册/凭据变更需单独授权。
 - [ ] 完成真实生产登录态验收：登录成功、会话过期、401、403、失败回跳和权限拒绝。
 - [ ] 按 OpenIdentity 生产契约补齐并验收 `id_token_hint`、back-channel logout/revocation 和密钥轮换。
 - [ ] 完成新 API Service 严格 claims/scope 接入与真实机器客户端验收。
-- [ ] 获得明确部署授权后，再执行 IDC 部署和不可变镜像验收。
+- [ ] localidc 应用部署与测试已授权；生产部署和不可变镜像验收仍待单独授权。
